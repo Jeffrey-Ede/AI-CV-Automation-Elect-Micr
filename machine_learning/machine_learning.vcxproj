@@ -21,6 +21,9 @@
   <ItemGroup>
     <ClCompile Include="em_env.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\em_env\setup.py" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{6ED2AEDE-B66D-4EDA-81A7-B5CD76049F41}</ProjectGuid>
@@ -79,10 +82,11 @@
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Users\Jeffrey Ede\source\repos\machine_learning\machine_learning;C:\Users\Jeffrey Ede\Downloads\boost_1_66_0\boost_1_66_0;C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\include;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\Lib\site-packages\numpy\core\include;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\include\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\Jeffrey Ede\source\repos\machine_learning\machine_learning;C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\boost_1_38_0;C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\include;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\Lib\site-packages\numpy\core\include;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\include\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>C:\Users\Jeffrey Ede\Downloads\boost_1_66_0\boost_1_66_0\stage\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>DMPlugInBasic.lib;Foundation.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -101,6 +105,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\include;C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\boost_1_38_0;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\include;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\lib\site-packages\numpy\core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -115,10 +120,13 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\include;C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\boost_1_38_0\boost_1_38_0;C:\Program Files (x86)\Microsoft Visual Studio\Shared\Python36_64\lib\site-packages\numpy\core\include;C:\Program Files %28x86%29\Microsoft Visual Studio\Shared\Python36_64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalLibraryDirectories>C:\Users\Jeffrey Ede\Downloads\DMSDK2\DMSDK2\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>DMPlugInBasic.lib;Foundation.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

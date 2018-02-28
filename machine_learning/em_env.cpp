@@ -15,7 +15,7 @@ get_img(PyObject* self, PyObject* args)
 {
 	//Image dimensions
 	int w, h;
-	PyArg_ParseTuple(args, "i", &w, &h);
+	PyArg_ParseTuple(args, "ii", &w, &h);
 
 	//Get the image
 	static Gatan::DM::Function __sFunction = (DM_FunctionToken)NULL;
@@ -43,7 +43,6 @@ static struct PyModuleDef em_env_module =
 	-1,
 	methods
 };
-
 
 PyMODINIT_FUNC
 PyInit_em_env(void)

@@ -4,7 +4,8 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>1a0e1cd3-f4bd-48b3-b574-5fb9e0eb611d</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>setup.py</StartupFile>
+    <StartupFile>
+    </StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -21,7 +22,19 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="setup.py" />
+    <Compile Include="em_env.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="fresnel_env.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="fresnel_remover.py" />
+    <Compile Include="tester.py">
+      <SubType>Code</SubType>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="marionette.s" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
