@@ -10,27 +10,20 @@ class EM_Env_Utility(object):
 
     @staticmethod
     def read_img(img_loc):
-        '''Read the image at a location'''
-        
+        '''Read image at a location'''
+
         return cv2.imread(img_loc, cv2.IMREAD_UNCHANGED)
 
     @staticmethod
     def img_to_grey(img):
-        '''Average image color channels to convert it to greyscale'''
+        '''Average image color channels to convert it to greyscale if it has multiple color channels'''
 
-        grey = np.zeros((img.shape[0], img.shape[1]), dtype=np.float32)
+        return np.mean(img, axis=(0,1))#grey
 
-        #Perform simple average
-        for row in range(len(image)):
-            for col in range(len(image(row))):
-                grey[row][col] = np.average(img[row][col])
+    def read_grey_img(self, img_loc):
+        '''Read and average image color channels to convert it to greyscale if it has multiple color channels'''
 
-        return grey
-
-    @staticmethod
-    def read_grey_img(img_loc):
-        
-        return img_to_grey( read_img(img_loc) )
+        return self.img_to_grey( self.read_img(img_loc) )
 
 
 class EM_Env(EM_Env_Utility):
@@ -60,6 +53,8 @@ class EM_Env(EM_Env_Utility):
             "terminate"] #0 args
         instr_vals = [str(key) for key in enumerate(instr_keys)]
         self.instr_dict = dict(zip(instr_keys, instr_vals))
+
+        self.img = None
 
     def execute(self, instructions):
         '''Execute instructions on the electron microscope and get the resulting state'''
@@ -127,6 +122,7 @@ class EM_Env(EM_Env_Utility):
         '''Create an image to display to the user'''
         
         #If the image from the electron microscope camera is requested
-        if mode == 'EM_Camera':
-            #Add functionality later...
-            a = 1
+        if mode == 'EM_Camera' and self.img is not None:
+            
+            cv2.imshow('EM_Camera', self.img)
+            cv2.waitKey(0)

@@ -24,10 +24,10 @@ ENV_NAME = 'spot_env-v0'
 class EM_Processor(Processor):
     def process_observation(self, observation):
         #assert observation.ndim == 3  # (height, width, channel)
-        img = Image.fromarray(observation)
-        img = img.resize(INPUT_SHAPE).convert('L')  # resize and convert to grayscale
-        processed_observation = np.array(img)
-        assert processed_observation.shape == INPUT_SHAPE
+        #img = Image.fromarray(observation)
+        #img = img.resize(INPUT_SHAPE).convert('L')  # resize and convert to grayscale
+        #processed_observation = np.array(img)
+        #assert processed_observation.shape == INPUT_SHAPE
         return processed_observation.astype('uint8')  # saves storage in experience memory
 
     def process_state_batch(self, batch):

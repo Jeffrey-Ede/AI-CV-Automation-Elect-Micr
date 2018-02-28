@@ -7,10 +7,12 @@ instr_filename = buffer_loc + "instr.txt"
 state_filename = buffer_loc + "state.txt"
 state_change_wait = 0.01 #s
 
-env = Fresnel_Env( change_filename, instr_filename, state_filename, state_change_wait, 10, 10 )
+env = Fresnel_Env( change_filename, instr_filename, state_filename, state_change_wait, 10, 10, 0.5 )
 #instructions = [["get_img", "fileLoc"]]
 
 #env.execute(instructions)
 print(env.get_state())
+env._get_obs()
+print(env.render('EM_Camera'))
 
 env.terminate()
