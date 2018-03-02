@@ -29,6 +29,9 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="fresnel_remover.py" />
+    <Compile Include="fresnel_transfer_cnn.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="tester.py">
       <SubType>Code</SubType>
     </Compile>

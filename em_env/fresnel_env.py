@@ -46,12 +46,12 @@ class Fresnel_Env(gym.Env):
                                             dtype=np.uint8)
         self.state = self.get_state()
         
-        self.initial_z = get_z()
+        self.initial_z = self.get_z()
 
         #Use calculated correct actions to determine rewards
         self.req_proximity = 0.1
         self.z = self.initial_z
-        self.target_z = get_optimal_z
+        self.target_z = self.get_optimal_z()
 
         self.prev_diff = self.z - self.target_z
 
@@ -143,6 +143,9 @@ class Fresnel_Env(gym.Env):
 
     def get_z(self):
         '''Get the current z position'''
+
+        instructions = [[self.env.instr_dict["getz"]]]
+        return self.env.execute(instructions)
 
 
     @staticmethod

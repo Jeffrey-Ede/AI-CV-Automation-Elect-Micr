@@ -50,6 +50,12 @@ class EM_Env(EM_Env_Utility):
             "EMSetStageY", #1 arg: amount to shift the stage Y
             "EMSetStageZ", #1 arg: amount to shift the stage Z
             "EMChangeBeamShift", #2 args: shift in x, shift in y
+            "EMSetStageX_Abs", #1 arg: New absolute X position
+            "EMSetStageY_Abs", #1 arg: New absolute Y position
+            "EMSetStageZ_Abs", #1 arg: New absolute Z position
+            "EMGetStageX", #0 args
+            "EMGetStageY", #0 args
+            "EMGetStageZ", #0 args
             "terminate"] #0 args
         instr_vals = [str(key) for key in enumerate(instr_keys)]
         self.instr_dict = dict(zip(instr_keys, instr_vals))
