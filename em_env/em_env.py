@@ -18,7 +18,7 @@ class EM_Env_Utility(object):
     def img_to_grey(img):
         '''Average image color channels to convert it to greyscale if it has multiple color channels'''
 
-        return np.mean(img, axis=(0,1))#grey
+        return np.mean(img, axis=(0,1)) #Grey
 
     def read_grey_img(self, img_loc):
         '''Read and average image color channels to convert it to greyscale if it has multiple color channels'''
@@ -56,8 +56,11 @@ class EM_Env(EM_Env_Utility):
             "EMGetStageX", #0 args
             "EMGetStageY", #0 args
             "EMGetStageZ", #0 args
+            "EMChangeFocus", #1 arg: Change in focus df
+            "EMGetFocus", #0 args: Get microscope focus
+            "EMSetFocus", #1 arg: New focus value
             "terminate"] #0 args
-        instr_vals = [str(key) for key in enumerate(instr_keys)]
+        instr_vals = [str(key) for key in range(len(instr_keys))]
         self.instr_dict = dict(zip(instr_keys, instr_vals))
 
         self.img = None
@@ -69,7 +72,7 @@ class EM_Env(EM_Env_Utility):
         self.write_instr(instructions)
         self.send_instr()
 
-        return get_state()
+        return self.get_state()
 
     def write_instr(self, instructions):
         '''Prepare instructions file for the microscope'''
