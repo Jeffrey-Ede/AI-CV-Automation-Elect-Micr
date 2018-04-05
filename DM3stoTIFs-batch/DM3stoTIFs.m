@@ -16,9 +16,10 @@ for i = 1:L
     %Extract image data from dm3 file
     evalc( 'dm3struct = DM3Import( strcat(inDir, files(i).name) )' );
     img = dm3struct.image_data .* dm3struct.intensity.scale;
+    
     %Save data to TIF
     [~,name,~] = fileparts(files(i).name);
-    %imwrite(img, strcat(outDir, name, '.tif'), 'bitdepth');
+    
     t = Tiff(strcat(outDir, name, '.tif'), 'w'); 
     tagstruct.ImageLength = size(img, 1); 
     tagstruct.ImageWidth = size(img, 2); 
