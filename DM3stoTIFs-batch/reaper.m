@@ -8,12 +8,12 @@ if topDir(end) ~= '/'
     topDir = strcat(topDir, '/');
 end
 
-outDir ='//flexo.ads.warwick.ac.uk/Shared39/EOL2100/2100/Users/Jeffrey-Ede/datasets/2100';
-if outDir(end) ~= '/' 
-    outDir = strcat(outDir, '/');
+outDirTop ='//flexo.ads.warwick.ac.uk/Shared39/EOL2100/2100/Users/Jeffrey-Ede/datasets/2100';
+if outDirTop(end) ~= '/' 
+    outDirTop = strcat(outDirTop, '/');
 end
 
-statSavePeriod = 5; %Save stats every _ images
+statSavePeriod = 200; %Save stats every _ images
 statsDir = '//flexo.ads.warwick.ac.uk/Shared39/EOL2100/2100/Users/Jeffrey-Ede/datasets';
 if statsDir(end) ~= '/' 
     statsDir = strcat(statsDir, '/');
@@ -24,13 +24,16 @@ if filesDir(end) ~= '/'
     filesDir = strcat(filesDir, '/');
 end
 
-files = dir( strcat(topDir, '**/*.dm3') );
+fprintf("Finding files...\n");
+
+files = dir( strcat(topDir, '**/*.dm4') )
 
 %Save file source locations
 save(strcat(filesDir, 'files.mat'), 'files');
 
-fprintf("update...\n");
+fprintf("Files saved...\n");
 
+%%Harvest files
 reaping = 1;
 compendium = [];
 L = numel(files);
@@ -58,7 +61,7 @@ for i = 1:L
                     %Save data to TIF
                     name = strcat('reaping', num2str(reaping));
                     
-                    t = Tiff(strcat(outDir, name, '.tif'), 'w'); 
+                    t = Tiff(strcat(outDirTop, name, '.tif'), 'w'); 
                     tagstruct.ImageLength = size(img2048, 1); 
                     tagstruct.ImageWidth = size(img2048, 2); 
                     tagstruct.Compression = Tiff.Compression.None; 
@@ -79,9 +82,12 @@ for i = 1:L
         end
     end
     
-    %Save the compendium every 200 images in case something goes wrong
+    %Leapfrog save the compendium every 100 images in case something goes wrong
     if mod(i, statSavePeriod) == 0
-        save(strcat(statsDir, 'compendium.mat'), 'compendium');
+        save(strcat(statsDir, 'compendium1.mat'), 'compendium');
+    end
+    if mod(i, statSavePeriod)-idivide(int32(statSavePeriod), int32(2)) == 0
+        save(strcat(statsDir, 'compendium2.mat'), 'compendium');
     end
 end
 
