@@ -1,28 +1,26 @@
 %Harvest images from the microscopy data servers to train neural networks
 %with
 
-maxNoisetoSignalRatio = 0.02;
-
-topDir = '//flexo.ads.warwick.ac.uk/Shared38/ARM200/Users/';
+topDir = '//flexo.ads.warwick.ac.uk/Shared39/EOL2100/2100/Users';
 if topDir(end) ~= '/'
     topDir = strcat(topDir, '/');
 end
 
-outDirTop ='//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/ARM_dm3';
+outDirTop ='F:/stills_all/stills';
 if outDirTop(end) ~= '/' 
     outDirTop = strcat(outDirTop, '/');
 end
 
 statSavePeriod = 200; %Save stats every _ images
-statsDir = '//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/stats/2100plus_dm4';
+statsDir = 'F:/stills_all/original_filenames/80001+/';
 if statsDir(end) ~= '/' 
     statsDir = strcat(statsDir, '/');
 end
-
-filesDir = '//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/stats/2100plus_dm4';
-if filesDir(end) ~= '/' 
-    filesDir = strcat(filesDir, '/');
-end
+% 
+% filesDir = '//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/stats/2100plus_dm4';
+% if filesDir(end) ~= '/' 
+%     filesDir = strcat(filesDir, '/');
+% end
 
 fprintf("Finding files...\n");
 
@@ -36,10 +34,10 @@ files = dir( strcat(topDir, '**/*.dm4') )
 %load('//flexo.ads.warwick.ac.uk/shared39/EOL2100/2100/Users/Jeffrey-Ede/datasets/compendium1')
 %load('//flexo.ads.warwick.ac.uk/shared39/EOL2100/2100/Users/Jeffrey-Ede/datasets/files')
 %%Harvest files
-reaping = 1;
+reaping = 80001;
 compendium = [];
 L = numel(files);
-for i = 1:L
+for i = 20001:L
     
     disp( strcat("Image ", num2str(i), " of ", num2str(L), "...") );
     
@@ -52,32 +50,29 @@ for i = 1:L
             if tags.InImageMode.Value == 1 && numel(size(img)) == 2
                 
                 %Get image stats and a cropped then resized 2048x2048 image 
-                [stats, img2048] = img_params(img);
+                [img2048] = img_params_lq(img);
+
+                %Save data to TIF
+                savename = strcat('reaping', num2str(reaping));
+
+                t = Tiff(strcat(outDirTop, savename, '.tif'), 'w'); 
+                tagstruct.ImageLength = size(img2048, 1); 
+                tagstruct.ImageWidth = size(img2048, 2); 
+                tagstruct.Compression = Tiff.Compression.None; 
+                tagstruct.SampleFormat = Tiff.SampleFormat.IEEEFP; 
+                tagstruct.Photometric = Tiff.Photometric.MinIsBlack;
+                tagstruct.BitsPerSample = 32; 
+                tagstruct.SamplesPerPixel = 1; 
+                tagstruct.PlanarConfiguration = Tiff.PlanarConfiguration.Chunky; 
+                t.setTag(tagstruct); 
+                t.write(img2048); 
+                t.close();
                 
-                %Store statistics
-                compendium = [compendium, stats];
+                %Save original location of image
+                compendium = [compendium, [reaping, name]];
                 
-                disp(num2str(stats.ratio_of_meanNoise_to_mean));
-                if stats.ratio_of_meanNoise_to_mean >=0 && stats.ratio_of_meanNoise_to_mean < maxNoisetoSignalRatio
-%                     
-%                     %Save data to TIF
-%                     name = strcat('reaping', num2str(reaping));
-%                     
-%                     t = Tiff(strcat(outDirTop, name, '.tif'), 'w'); 
-%                     tagstruct.ImageLength = size(img2048, 1); 
-%                     tagstruct.ImageWidth = size(img2048, 2); 
-%                     tagstruct.Compression = Tiff.Compression.None; 
-%                     tagstruct.SampleFormat = Tiff.SampleFormat.IEEEFP; 
-%                     tagstruct.Photometric = Tiff.Photometric.MinIsBlack;
-%                     tagstruct.BitsPerSample = 32; 
-%                     tagstruct.SamplesPerPixel = 1; 
-%                     tagstruct.PlanarConfiguration = Tiff.PlanarConfiguration.Chunky; 
-%                     t.setTag(tagstruct); 
-%                     t.write(img2048); 
-%                     t.close();
+                reaping = reaping+1;
                 
-                    reaping = reaping+1;
-                end
             end
         catch
             warning(num2str(i));
