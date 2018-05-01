@@ -7,7 +7,7 @@ import arrayfire as af
 from skimage.measure import compare_ssim as ssim
 from scipy.misc import imread
 
-from numba import cuda
+#from numba import cuda
 
 #a = np.random.random((1,2))
 #a = af.Array(a.ctypes.data, a.shape, a.dtype.char)
@@ -37,6 +37,9 @@ def mult_amp_phase(arr1, arr2):
 
 def np_to_af(np_arr):
     return af.Array(np_arr.ctypes.data, np_arr.shape, np_arr.dtype.char)
+
+def fft_shift(fft):
+    return af.shift(fft, fft.dims()[0]//2 + fft.dims()[0]%2, fft.dims()[1]//2 + fft.dims()[1]%2)
 
 def scale0to1(img):
     """Rescale image between 0 and 1"""
@@ -180,21 +183,16 @@ def calc_transfer_func(side, wavelength, defocus_change, px_dim = 1.0):
 
     return ctf.as_type(af.Dtype.c32)
 
-def fft_to_diff(fft, side):
+def fft_to_diff(fft, side=None):
+    return fft_shift(fft)
 
-    diff = af.constant(0.0, side, side)
-    for x in af.ParallelRange(side):
-        for y in af.ParallelRange(side):
-            diff[x, y] = disp_fft_amp[(x+side//2) % dim, (y+side//2) % dim]
-
-    return diff
-
-def diff_to_fft(diff, side):
-    return fft_to_diff(disp_fft_amp, side)
+def diff_to_fft(diff, side=None):
+    return fft_to_diff(diff, side)
 
 def propagate_wave(img, ctf):
 
-    fft = af.fft(img)
+    fft = af.fft2(img)
+
     ctf = diff_to_fft(ctf, fft.dims()[0])
 
     amp_phase_mult = mult_amp_phase(fft, ctf)
@@ -208,13 +206,13 @@ def propagate_to_focus(img, defocus, params):
         side=img.dims()[0],
         wavelength=params["wavelength"],
         defocus_change=-defocus)
-    print("ctf calculated")
+
     return propagate_wave(img, ctf)
 
 def propagate_back_to_defocus(img, defocus, params):
     
     ctf = calc_transfer_func(
-        side=params["side"],
+        side=img.dims()[0],
         wavelength=params["wavelength"],
         defocus_change=defocus)
 
@@ -223,8 +221,8 @@ def propagate_back_to_defocus(img, defocus, params):
 def reconstruct(stack, params, num_iter = 50):
     """GPU accelerate wavefunction reconstruction and mse calculation"""
 
-    width = stack[0].shape[0]+1
-    height = stack[0].shape[1]+1
+    width = stack[0].shape[0]
+    height = stack[0].shape[1]
     stack_gpu = [np_to_af(img) for img in stack]
 
     exit_wave = af.constant(0, width, height)
@@ -234,7 +232,7 @@ def reconstruct(stack, params, num_iter = 50):
 
         for img, idx in zip(stack_gpu, range(len(stack))):
 
-            print("Iteration {0} of {1}".format(idx, len(stack)))
+            print("Propagation {0} of {1}".format(idx, len(stack)))
 
             img = propagate_to_focus(img, params["defocus"][idx], params)
 
@@ -243,7 +241,7 @@ def reconstruct(stack, params, num_iter = 50):
         exit_wave /= len(stack)
 
         for img, idx in zip(stack_gpu, range(len(stack))):
-            stack[idx] = propagate_back_to_defocus(exit_wave, params["defocus"][idx])
+            stack[idx] = propagate_back_to_defocus(exit_wave, params["defocus"][idx], params)
             stack[idx] = (af.abs(img) / af.abs(stack[idx])) * stack[idx]
 
     return exit_wave
@@ -284,7 +282,7 @@ def minify_stack(stack, side):
 
 if __name__ == "__main__":
 
-    dir = "E:/dump/stack1/"
+    dir = "D:/data/"
     mini_side = 256
     prop_side_to_use = 0.9
 
@@ -312,4 +310,5 @@ if __name__ == "__main__":
         stack=stack, 
         side_to_use=int(prop_side_to_use*side), 
         start_params=start_params)
+
 
