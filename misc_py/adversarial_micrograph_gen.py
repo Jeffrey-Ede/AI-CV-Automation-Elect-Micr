@@ -33,34 +33,46 @@ slim = tf.contrib.slim #For depthwise separable strided atrous convolutions
 
 tf.logging.set_verbosity(tf.logging.DEBUG)
 
-features0 = 32
-features1 = 64
-features2 = 128
-features3 = 192
-features4 = 384
-features5 = 384
+features1 = 1#6
+features2 = 3#2
+features3 = 64
+features4 = 1#28
+features5 = 2#56
+features6 = 7#68
 
-gen_features1 = 444
-gen_features2 = 444
-gen_features3 = 444 #Middle flow
-gen_features4 = 444
-gen_features5 = 444
+gen_features0 = 32
+gen_features1 = 64
+gen_features2 = 64
+gen_features3 = 32
 
-extra_gen_middle_blocks = 8 #_ + 1 in total
-extra_dis_middle_blocks = 6 #_ + 1 in total
+nin_features1 = 64
+nin_features2 = 128
+nin_features3 = 256
+nin_features4 = 768
 
+nin_features_out1 = 512
+nin_features_out2 = 258
+nin_features_out3 = 128
+nin_features_out4 = 64
+
+num_global_enhancer_blocks = 1
+num_local_enhancer_blocks = 1#5
+num_discriminator_final_blocks = 4
+
+#data_dir = "X:/Jeffrey-Ede/stills_all/"
 data_dir = "E:/stills_hq-mini/"
 
-modelSavePeriod = 6 #Train timestep in hours
+modelSavePeriod = 12 #Train timestep in hours
 modelSavePeriod *= 3600 #Convert to s
-model_dir = "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/denoiser-multi-gpu-7/"
+#model_dir = "X:/Jeffrey-Ede/models/gan-multi-gpu-1/"
+model_dir = "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/denoiser-multi-gpu-10/"
 
 shuffle_buffer_size = 5000
 num_parallel_calls = 8
 num_parallel_readers = 5
 prefetch_buffer_size = 20
-batch_size = 2
-num_gpus = 2
+batch_size = 1
+num_gpus = 1
 
 def num_examples_per_epoch(subset='train'):
     if subset == 'train':
@@ -77,6 +89,7 @@ num_epochs = 1000000 #Dataset repeats indefinitely
 
 logDir = "C:/dump/train/"
 log_file = model_dir+"log.txt"
+val_log_file = model_dir+"val_log.txt"
 log_every = 1 #Log every _ examples
 cumProbs = np.array([]) #Indices of the distribution plus 1 will be correspond to means
 
@@ -89,20 +102,22 @@ channels = 1 #Greyscale input image
 
 #Sidelength of images to feed the neural network
 cropsize = 512
+generator_input_size = cropsize
 height_crop = width_crop = cropsize
 
 #hparams = experiment_hparams(train_batch_size=batch_size, eval_batch_size=16)
 
 weight_decay = 0.0#2.0e-4
 initial_learning_rate = 0.001
+initial_discriminator_learning_rate = 0.001
 num_workers = 1
 
 increase_batch_size_by_factor = 5
 effective_batch_size = increase_batch_size_by_factor*batch_size
 
-generator_input_size = 128
+save_result_every_n_batches = 5000
 
-perceptual_loss_lambda = 0.1 #Scale perceptual loss by _ before addition to contextual loss
+val_skip_n = 10
 
 def _tf_fspecial_gauss(size, sigma):
     """Function to mimic the 'fspecial' gaussian MATLAB function
@@ -179,10 +194,18 @@ def tf_median(v):
     m = v.get_shape()[0]//2
     return tf.nn.top_k(v, m).values[m-1]
 
-def generator_architecture(inputs, ground_truth, phase=False, params=None):
+def generator_architecture(inputs, phase=False, params=None):
     """Generates fake data to try and fool the discrimator"""
 
     concat_axis = 3
+
+    def pad(input, kernel_size):
+        padding = tf.constant([[0, 0], 
+                               [kernel_size//2, kernel_size//2],
+                               [kernel_size//2, kernel_size//2],
+                               [0, 0]])
+        padded = tf.pad(input, padding, 'REFLECT')
+        return padded
 
     ##Reusable blocks
     def _batch_norm_fn(input):
@@ -196,11 +219,20 @@ def generator_architecture(inputs, ground_truth, phase=False, params=None):
         return batch_norm
 
     def batch_then_activ(input):
-
         batch_then_activ = _batch_norm_fn(input)
-        batch_then_activ = tf.nn.relu(batch_then_activ)
-
+        batch_then_activ = tf.nn.relu6(batch_then_activ)
         return batch_then_activ
+
+    def conv_block_not_sep(input, filters, kernel_size=3, phase=phase):
+
+        conv_block = tf.layers.conv2d(
+            inputs=input,
+            filters=filters,
+            kernel_size=kernel_size,
+            padding='SAME')
+        conv_block = batch_then_activ(conv_block)
+
+        return conv_block
 
     def conv_block(input, filters, phase=phase):
         """
@@ -213,16 +245,16 @@ def generator_architecture(inputs, ground_truth, phase=False, params=None):
         return conv_block
 
     def strided_conv_block(input, filters, stride, rate=1, phase=phase, 
-                           extra_batch_norm=True):
+                           extra_batch_norm=True, kernel_size=3):
         
         strided_conv = slim.separable_convolution2d(
             inputs=input,
             num_outputs=filters,
-            kernel_size=3,
+            kernel_size=kernel_size,
             depth_multiplier=1,
             stride=stride,
-            padding='SAME',
             data_format='NHWC',
+            padding='SAME',
             rate=rate,
             activation_fn=None,#tf.nn.relu,
             normalizer_fn=_batch_norm_fn if extra_batch_norm else False,
@@ -240,6 +272,18 @@ def generator_architecture(inputs, ground_truth, phase=False, params=None):
 
         return strided_conv
 
+    def residual_conv(input, filters):
+
+        residual = tf.layers.conv2d(
+            inputs=input,
+            filters=filters,
+            kernel_size=1,
+            strides=2,
+            padding="SAME")
+        residual = batch_then_activ(residual)
+
+        return residual
+
     def deconv_block(input, filters):
         '''Transpositionally convolute a feature space to upsample it'''
         
@@ -248,7 +292,7 @@ def generator_architecture(inputs, ground_truth, phase=False, params=None):
             filters=filters,
             kernel_size=3,
             strides=2,
-            padding="same")
+            padding='SAME')
         deconv_block = batch_then_activ(deconv_block)
 
         return deconv_block
@@ -288,58 +332,77 @@ def generator_architecture(inputs, ground_truth, phase=False, params=None):
 
         return main_flow + input
 
+    def xception_encoding_block_diff(input, features_start, features_end):
+        
+        cnn = conv_block(
+            input=input, 
+            filters=features_start)
+        cnn = conv_block(
+            input=cnn, 
+            filters=features_start)
+        cnn = strided_conv_block(
+            input=cnn,
+            filters=features_end,
+            stride=2)
+
+        residual = residual_conv(input, features_end)
+        cnn += residual
+
+        return cnn
+
+    def network_in_network(input):
+
+        nin = strided_conv_block(input, nin_features1, 2, 1)
+        
+        nin = strided_conv_block(nin, nin_features2, 2, 1)
+        
+        nin = strided_conv_block(nin, nin_features2, 1, 1)
+        nin = strided_conv_block(nin, nin_features3, 2, 1)
+
+        nin = xception_encoding_block_diff(nin, nin_features3, nin_features4)
+
+        for _ in range(num_global_enhancer_blocks):
+            nin = xception_middle_block(nin, nin_features4)
+
+        nin = deconv_block(nin, nin_features_out1)
+
+        nin = strided_conv_block(nin, nin_features_out2, 1, 1)
+        nin = strided_conv_block(nin, nin_features_out2, 1, 1)
+        nin = deconv_block(nin, nin_features_out2)
+
+        nin = strided_conv_block(nin, nin_features_out3, 1, 1)
+        nin = deconv_block(nin, nin_features_out3)
+
+        nin = strided_conv_block(nin, nin_features_out4, 1, 1)
+        nin = deconv_block(nin, nin_features_out4)
+
+        return nin
+
     ##Model building
     input_layer = tf.reshape(inputs, [-1, generator_input_size, generator_input_size, channels])
 
-    enc1 = xception_encoding_block(input_layer, gen_features1)
-    enc2 = xception_encoding_block(enc1, gen_features2)
+    enc = strided_conv_block(input=input_layer,
+                             filters=gen_features0,
+                             stride=2,
+                             kernel_size = 9)
+    enc = strided_conv_block(enc, gen_features1, 1, 1)
 
-    middle_flow = xception_middle_block(enc2, gen_features3)
-    for _ in range(extra_gen_middle_blocks):
-        middle_flow = xception_middle_block(middle_flow, gen_features3)
-    middle_flow = deconv_block(middle_flow, gen_features2)
+    enc += network_in_network(enc)
 
-    concat1 = tf.concat(
-        values=[enc1, middle_flow],
-        axis=concat_axis)
-    
-    dec0 = conv_block(concat1, gen_features2)
-    dec = conv_block(dec0, gen_features2)
-    dec = conv_block(dec0, gen_features2)
-    dec += dec0
-    dec = deconv_block(middle_flow, gen_features3)
+    for _ in range(num_local_enhancer_blocks):
+        enc = xception_middle_block(enc, gen_features2)
 
-    res_input = conv_block_not_sep(input, gen_features3, 1)
-    concat2 = tf.concat(
-        values=[dec, res_input],
-        axis=concat_axis)
-    
-    dec0 = conv_block(concat2, gen_features3)
-    dec = conv_block(dec0, gen_features3)
-    dec = conv_block(dec0, gen_features3)
-    dec += dec0
-
-    deconv = deconv_block(dec, gen_features4)
-    dec0 = conv_block(deconv, gen_features4)
-    dec = conv_block(dec0, gen_features4)
-    dec = conv_block(dec0, features4)
-    dec += dec0
-
-    deconv = deconv_block(dec, gen_features5)
-    dec0 = conv_block(deconv, gen_features5)
-    dec = conv_block(dec0, gen_features5)
-    dec = conv_block(dec0, gen_features5)
-    dec += dec0
+    enc = deconv_block(enc, gen_features3)
+    enc = strided_conv_block(enc, gen_features3, 1, 1)
 
     #Create final image with 1x1 convolutions
-    final = conv_block_not_sep(deconv0, 1)
+    final = conv_block_not_sep(enc, 1)
 
     #Image values will be between 0 and 1
     output = tf.clip_by_value(
         final,
         clip_value_min=0.,
-        clip_value_max=1.,
-        name='clipper')
+        clip_value_max=1.)
 
     return output
 
@@ -423,8 +486,7 @@ def discriminator_architecture(inputs, ground_truth, phase=False, params=None, g
             reuse=None,
             variables_collections=None,
             outputs_collections=None,
-            trainable=True,
-            scope=None)
+            trainable=True)
         strided_conv = batch_then_activ(strided_conv)
 
         return strided_conv
@@ -440,6 +502,42 @@ def discriminator_architecture(inputs, ground_truth, phase=False, params=None, g
         residual = batch_then_activ(residual)
 
         return residual
+
+    def xception_encoding_block(input, features):
+        
+        cnn = conv_block(
+            input=input, 
+            filters=features)
+        cnn = conv_block(
+            input=cnn, 
+            filters=features)
+        cnn = strided_conv_block(
+            input=cnn,
+            filters=features,
+            stride=2)
+
+        residual = residual_conv(input, features)
+        cnn += residual
+
+        return cnn
+
+    def xception_encoding_block_diff(input, features_start, features_end):
+        
+        cnn = conv_block(
+            input=input, 
+            filters=features_start)
+        cnn = conv_block(
+            input=cnn, 
+            filters=features_start)
+        cnn = strided_conv_block(
+            input=cnn,
+            filters=features_end,
+            stride=2)
+
+        residual = residual_conv(input, features_end)
+        cnn += residual
+
+        return cnn
 
     def xception_middle_block(input, features):
         
@@ -458,113 +556,86 @@ def discriminator_architecture(inputs, ground_truth, phase=False, params=None, g
 
         return main_flow + input
 
+    def shared_flow(input):
+
+        shared = xception_encoding_block_diff(input, features2, features3)
+        shared = xception_encoding_block_diff(shared, features3, features4)
+        
+        shared = xception_encoding_block(shared, features5)
+        shared = xception_encoding_block(shared, features6)
+
+        return shared
+
+    def terminating_fc(input):
+
+        fc = _batch_norm_fn(input)
+        fc = tf.contrib.layers.flatten(fc)
+        fc = tf.contrib.layers.fully_connected(inputs=fc,
+                                               num_outputs=1,
+                                               activation_fn=tf.nn.tanh)
+        return fc
+
     '''Model building'''
+
     input_layer = tf.reshape(inputs, [-1, cropsize, cropsize, channels])
 
-    #Encoding block 0
-    cnn0 = conv_block(
-        input=input_layer, 
-        filters=features0)
-    cnn0_last = conv_block(
-        input=cnn0, 
-        filters=features0)
-    cnn0_strided = strided_conv_block(
-        input=cnn0_last,
-        filters=features0,
-        stride=2)
+    with tf.variable_scope("small-start", reuse=False):
+        small = tf.random_crop(
+            input_layer,
+            size=(batch_size, cropsize//4, cropsize//4, 1))
+        small = strided_conv_block(small, features1, 1, 1)
+        small = strided_conv_block(small, features2, 1, 1)
 
-    residual0 = residual_conv(input_layer, features0)
-    cnn0_strided += residual0
+    with tf.variable_scope("medium-start", reuse=False):
+        medium = tf.random_crop(
+            input_layer,
+            size=(batch_size, cropsize//2, cropsize//2, 1))
+        medium = tf.image.resize_images(medium, 
+                                        (cropsize//4, cropsize//4), 
+                                        method=tf.image.ResizeMethod.AREA)
+        medium = strided_conv_block(medium, features1, 1, 1)
+        medium = strided_conv_block(medium, features2, 1, 1)
 
-    #Encoding block 1
-    cnn1 = conv_block(
-        input=cnn0_strided, 
-        filters=features1)
-    cnn1_last = conv_block(
-        input=cnn1, 
-        filters=features1)
-    cnn1_strided = strided_conv_block(
-        input=cnn1_last,
-        filters=features1,
-        stride=2)
+    with tf.variable_scope("large-start", reuse=False):
+        large = input_layer
+        large = tf.image.resize_images(large, 
+                                        (cropsize//4, cropsize//4), 
+                                        method=tf.image.ResizeMethod.AREA)
+        large = strided_conv_block(large, features1, 1, 1)
+        large = strided_conv_block(large, features2, 1, 1)
 
-    residual1 = residual_conv(cnn0_strided, features1)
-    cnn1_strided += residual1
+        #s1 = shared_flow(small)
+        #s2 = shared_flow(small)
+        #assert s1 is s2
 
-    #Encoding block 2
-    cnn2 = conv_block(
-        input=cnn1_strided,
-        filters=features2)
-    cnn2_last = conv_block(
-        input=cnn2,
-        filters=features2)
-    cnn2_strided = strided_conv_block(
-        input=cnn2_last,
-        filters=features2,
-        stride=2)
+    with tf.variable_scope("shared") as shared_scope:
+        small = shared_flow(small)
+    with tf.variable_scope(shared_scope, reuse=True):
+        medium = shared_flow(medium)
+    with tf.variable_scope(shared_scope, reuse=True):
+        large = shared_flow(large)
 
-    residual2 = residual_conv(cnn1_strided, features2)
-    cnn2_strided += residual2
+    with tf.variable_scope("small-end", reuse=False):
+        for _ in range(num_discriminator_final_blocks):
+            small = xception_middle_block(small, features6)
+        small = terminating_fc(small)
 
-    #Encoding block 3
-    cnn3 = conv_block(
-        input=cnn2_strided,
-        filters=features3)
-    cnn3_last = conv_block(
-        input=cnn3,
-        filters=features3)
-    cnn3_strided = strided_conv_block(
-        input=cnn3_last,
-        filters=features3,
-        stride=2)
+    with tf.variable_scope("medium-end", reuse=False):
+        for _ in range(num_discriminator_final_blocks):
+            medium = xception_middle_block(medium, features6)
+        medium = terminating_fc(medium)
 
-    residual3 = residual_conv(cnn2_strided, features3)
-    cnn3_strided += residual3
+    with tf.variable_scope("large", reuse=False):
+        for _ in range(num_discriminator_final_blocks):
+            large = xception_middle_block(large, features6)
+        large = terminating_fc(large)
 
-    #Encoding block 4
-    cnn4 = conv_block(
-        input=cnn3_strided,
-        filters=features4)
-    cnn4_last = conv_block(
-        input=cnn4,
-        filters=features4)
-    cnn4_strided = strided_conv_block(
-        input=cnn4_last,
-        filters=features4,
-        stride=2)
+    output = small + medium + large
+    output = tf.clip_by_value(output,
+                              clip_value_min=0.,
+                              clip_value_max=1.)
 
-    residual4 = residual_conv(cnn3_strided, features4)
-    cnn4_strided += residual4
-
-    #Encoding block 5
-    cnn5 = conv_block(
-        input=cnn4_strided,
-        filters=features5)
-    cnn5 = conv_block(
-        input=cnn5,
-        filters=features5)
-    cnn5_last = conv_block(
-        input=cnn5,
-        filters=features5)
-
-    cnn5_last += cnn4_strided
-
-    for _ in range(extra_dis_middle_blocks):
-        cnn5_last = xception_middle_block(cnn5_last, features5)
-
-    fc = _batch_norm_fn(cnn5_last)
-    fc = tf.tanh(fc)
-    fc = tf.layers.dense(
-        inputs=fc,
-        units=1)
-
-    output = tf.clip_by_value(
-        fc,
-        clip_value_min=0.,
-        clip_value_max=1.,
-        name='discriminator_clipper')
-
-    return fc
+    return output
 
 class ExamplesPerSecondHook(session_run_hook.SessionRunHook):
     """Hook to print out examples per second.
@@ -659,7 +730,7 @@ def local_device_setter(num_devices=1,
 def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
     """Returns a function that will build the model."""
     if component == "generator":
-        def _model_fn(features, labels=None, mode=None, params=None):
+        def _model_fn(features, mode=None, params=None, losses_des=None):
             """Model body.
 
             Support single host, one or more GPU training. Parameter distribution can
@@ -679,11 +750,8 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
             momentum = params.momentum
 
             tower_features = features
-            tower_labels = labels
-            tower_losses = []
             tower_grads = []
             tower_preds = []
-            tower_mses = []
 
             # channels first (NCHW) is normally optimal on GPU and channels last (NHWC)
             # on CPU. The exception is Intel MKL on CPU which is optimal with
@@ -716,13 +784,11 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
                 with tf.variable_scope('nn', reuse=bool(i != 0)):
                     with tf.name_scope('generator_tower_%d' % i) as name_scope:
                         with tf.device(device_setter):
-                            loss, grads, preds, mse = _generator_tower_fn(
-                                is_training, tower_features[i], tower_labels[i])
+                            grads, preds = _generator_tower_fn(
+                                is_training, tower_features[i], losses_des[i])
 
-                            tower_losses.append(loss)
                             tower_grads.append(grads)
                             tower_preds.append(preds)
-                            tower_mses.append(mse)
                             if i == 0:
                                 # Only trigger batch_norm moving mean and variance update from
                                 # the 1st tower. Ideally, we should grab the updates from all
@@ -731,12 +797,9 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
                                 # significant detriment.
                                 update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS, name_scope)
 
-
-            _tower_losses_tmp = tf.tuple(tower_losses)
-            _tower_mses_tmp = tf.tuple(tower_mses)
             _tower_preds_tmp = tf.stack(preds)
         
-            return [_tower_losses_tmp, _tower_preds_tmp, _tower_mses_tmp, update_ops] + _tower_grads
+            return [_tower_preds_tmp, update_ops] + tower_grads
 
     if component =="discriminator":
         def _model_fn(features, labels=None, mode=None, params=None):
@@ -796,7 +859,7 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
                 with tf.variable_scope('nn', reuse=bool(i != 0)):
                     with tf.name_scope('discriminator_tower_%d' % i) as name_scope:
                         with tf.device(device_setter):
-                            loss, grads, preds, params = _discriminator_tower_fn(
+                            loss, grads, preds = _discriminator_tower_fn(
                                 is_training, tower_features[i], tower_labels[i])
 
                             tower_losses.append(loss)
@@ -817,7 +880,7 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
 
     return _model_fn
 
-def _generator_tower_fn(is_training, feature, ground_truth):
+def _generator_tower_fn(is_training, feature, loss):
     """Build computation tower.
         Args:
         is_training: true if is training graph.
@@ -828,26 +891,17 @@ def _generator_tower_fn(is_training, feature, ground_truth):
     """
 
     #phase = tf.estimator.ModeKeys.TRAIN if is_training else tf.estimator.ModeKeys.EVAL
-    output = architecture(feature[0], ground_truth[0], is_training)
+    output = generator_architecture(feature[0], is_training)
 
     model_params = tf.trainable_variables()
 
-    tower_pred = output
-
-    out = tf.reshape(output, [-1, cropsize, cropsize, channels])
-    truth = tf.reshape(ground_truth[0], [-1, cropsize, cropsize, channels])
-    
-    mse = tf.reduce_mean(tf.losses.mean_squared_error(out, truth))
-    tower_loss = tf.cond(mse < 0.001, lambda: 1000.*mse, lambda: tf.sqrt(1000.*mse))
-
-    #tower_loss += 1.0-tf_ssim(out, truth) #Don't need to unstack for batch size of 2
-
-    tower_loss += weight_decay * tf.add_n(
+    loss += weight_decay * tf.add_n(
         [tf.nn.l2_loss(v) for v in model_params])
+    
+    loss_reshaped = tf.reshape(loss, (1,))
+    tower_grad = tf.gradients(loss_reshaped, model_params)
 
-    tower_grad = tf.gradients(tower_loss, model_params)
-
-    return tower_loss, tower_grad, tower_pred, mse
+    return tower_grad, output
 
 def _discriminator_tower_fn(is_training, feature, ground_truth):
     """Build computation tower.
@@ -860,35 +914,79 @@ def _discriminator_tower_fn(is_training, feature, ground_truth):
     """
 
     #phase = tf.estimator.ModeKeys.TRAIN if is_training else tf.estimator.ModeKeys.EVAL
-    output = architecture(feature[0], ground_truth[0], is_training)
+    output = discriminator_architecture(feature, ground_truth, is_training)
 
     model_params = tf.trainable_variables()
 
-    tower_pred = output
-
-    tower_loss = weight_decay * tf.add_n(
+    small_const = 1.e-6
+    tower_loss = -tf.cond(ground_truth[0] > 0., 
+                          lambda: tf.log(1.-output+small_const), 
+                          lambda: tf.log(output+small_const))
+    tower_loss += weight_decay * tf.add_n(
         [tf.nn.l2_loss(v) for v in model_params])
 
     tower_grad = tf.gradients(tower_loss, model_params)
 
-    return tower_loss, tower_grad, tower_pred
+    return tower_loss, tower_grad, output
 
 
-def get_scale():
-    return 25.+np.random.exponential(75.)
+def flip_rotate(img):
+    """Applies a random flip || rotation to the image, possibly leaving it unchanged"""
+
+    choice = int(8*np.random.rand())
+    
+    if choice == 0:
+        return img
+    if choice == 1:
+        return np.rot90(img, 1)
+    if choice == 2:
+        return np.rot90(img, 2)
+    if choice == 3:
+        return np.rot90(img, 3)
+    if choice == 4:
+        return np.flip(img, 0)
+    if choice == 5:
+        return np.flip(img, 1)
+    if choice == 6:
+        return np.flip(np.rot90(img, 1), 0)
+    if choice == 7:
+        return np.flip(np.rot90(img, 1), 1)
 
 
-def gen_lq(img, scale, img_type=np.float32):
+def gen_lq(img, img_type=np.float32):
     '''Generate low quality image'''
 
-    #Ensure that the seed is random
-    np.random.seed(int(np.random.rand()*(2**32-1)))
+    choice = np.random.randint(0, 3)
+    mark = 0.5
 
-    #Adjust the image scale so that the image has the
-    # correct average counts
-    lq = np.random.poisson( img * scale )
+    if choice == 0: #Black rectangle in middle
+        half_side1 = np.random.randint(0, cropsize//2+1)//2
+        half_side2 = np.random.randint(0, cropsize//2+1)//2
+        img[half_side1:(cropsize-half_side1), half_side2:(cropsize-half_side2)] = mark
+    #if choice == 1: #Completely random
+    #    frac = np.random.rand()
+    #    mask = np.random.uniform(0, 1, img.shape)
+    #    mask[mask>frac] = mark
+    #    img = np.ceil(mask)*img
+    if choice == 1: #Black side
+        img = flip_rotate(img)
+        side = np.random.randint(0, cropsize+1)
+        img[0:side, 0:side] = mark
+    #if choice == 3: #Splodges from thresholding image
+    #    thresh = np.random.rand()
+    #    if np.random.rand() > 0.5:
+    #        mask = img
+    #        mask[img<thresh] = mark
+    #    else:
+    #        mask = img
+    #        mask[img>1.-thresh] = mark
+    #    img[flip_rotate(mask)>0.] = mark
+    if choice == 2: #Black corner square
+        half_side1 = np.random.randint(0, cropsize//2+1)//2
+        half_side2 = np.random.randint(0, cropsize//2+1)//2
+        img[:half_side1, :half_side2] = mark
 
-    return scale0to1(lq).astype(img_type)
+    return flip_rotate(img.astype(np.float32))
 
 
 def load_image(addr, resizeSize=None, imgType=np.float32):
@@ -919,29 +1017,6 @@ def scale0to1(img):
 
     return img.astype(np.float32)
 
-
-def flip_rotate(img):
-    """Applies a random flip || rotation to the image, possibly leaving it unchanged"""
-
-    choice = int(8*np.random.rand())
-    
-    if choice == 0:
-        return img
-    if choice == 1:
-        return np.rot90(img, 1)
-    if choice == 2:
-        return np.rot90(img, 2)
-    if choice == 3:
-        return np.rot90(img, 3)
-    if choice == 4:
-        return np.flip(img, 0)
-    if choice == 5:
-        return np.flip(img, 1)
-    if choice == 6:
-        return np.flip(np.rot90(img, 1), 0)
-    if choice == 7:
-        return np.flip(np.rot90(img, 1), 1)
-
 def preprocess(img):
 
     img[np.isnan(img)] = 0.5
@@ -949,25 +1024,20 @@ def preprocess(img):
 
     return scale0to1(flip_rotate(img))
 
-
 def record_parser(record):
     """Parse files and generate lower quality images from them"""
 
-    img = load_image(record)
-    img = preprocess(img)
+    img = preprocess(load_image(record))
+    lq = gen_lq(img)
 
-    lq = gen_lq(img, scale=get_scale())
-    rescaled_img = (np.mean(lq)/np.mean(img))*img
-
-    ##TODO: Sketch generator rather than lq generator
-
-    return lq, rescaled_img
+    return lq, img
 
 
 def reshaper(img1, img2):
     img1 = tf.reshape(img1, [cropsize, cropsize, channels])
     img2 = tf.reshape(img2, [cropsize, cropsize, channels])
     return img1, img2
+
 
 def input_fn(dir, subset, batch_size, num_shards):
     """Create a dataset from a list of filenames and shard batches from it"""
@@ -987,23 +1057,26 @@ def input_fn(dir, subset, batch_size, num_shards):
         iter = dataset.make_one_shot_iterator()
         img_batch = iter.get_next()
 
-        if num_shards <= 1:
-            # No GPU available or only 1 GPU.
-            return [img_batch], [img_batch]
-        else:
-            image_batch = tf.unstack(img_batch, num=batch_size, axis=1)
-            feature_shards = [[] for i in range(num_shards)]
-            feature_shards_truth = [[] for i in range(num_shards)]
-            for i in range(batch_size):
-                idx = i % num_shards
-                tensors = tf.unstack(image_batch[i], num=2, axis=0)
-                feature_shards[idx].append(tensors[0])
-                feature_shards_truth[idx].append(tensors[1])
-            feature_shards = [tf.parallel_stack(x) for x in feature_shards]
-            feature_shards_truth = [tf.parallel_stack(x) for x in feature_shards_truth]
+        image_batch = tf.unstack(img_batch, num=batch_size, axis=1)
+        feature_shards = [[] for i in range(num_shards)]
+        feature_shards_truth = [[] for i in range(num_shards)]
+        for i in range(batch_size):
+            idx = i % num_shards
+            tensors = tf.unstack(image_batch[i], num=2, axis=0)
+            feature_shards[idx].append(tensors[0])
+            feature_shards_truth[idx].append(tensors[1])
+        feature_shards = [tf.parallel_stack(x) for x in feature_shards]
+        feature_shards_truth = [tf.parallel_stack(x) for x in feature_shards_truth]
 
-            return feature_shards, feature_shards_truth
+        return feature_shards, feature_shards_truth
 
+def disp(img):
+
+    cv2.namedWindow('CV_Window', cv2.WINDOW_NORMAL)
+    cv2.imshow('CV_Window', scale0to1(img))
+    cv2.waitKey(0)
+
+    return
 
 def get_experiment_fn(data_dir,
                       num_gpus,
@@ -1101,62 +1174,54 @@ class RunConfig(tf.contrib.learn.RunConfig):
             '%s=%r' % (k, v) for (k, v) in six.iteritems(ordered_state))
 
 def _train_op(tower_losses_ph, 
-              tower_mses_ph, 
               variable_strategy, 
               update_ops, 
               learning_rate_ph, 
               **kwargs):
 
-    tower_losses = tf.unstack(tower_losses_ph, effective_batch_size)
-    tower_mses = tf.unstack(tower_mses_ph, effective_batch_size)
-    #tower_losses = [tower_loss_ph for tower_loss_ph in tower_losses_ph]
-    #tower_mses = [tower_mse_ph for tower_mse_ph in tower_mses_ph]
+    with tf.variable_scope("generator"):
 
-    #tower_grads = [ for tower_loss in tower_losses]
+        tower_losses = tf.unstack(tower_losses_ph, effective_batch_size)
     
-    tower_params = tf.trainable_variables()
-    tower_gradvars = []
-    for tower_grad in kwargs['_tower_grads']:
-        tower_gradvars.append(zip(tower_grad, tower_params))
+        tower_params = tf.trainable_variables()
+        tower_gradvars = []
+        for tower_grad in kwargs['_tower_grads']:
+            tower_gradvars.append(zip(tower_grad, tower_params))
 
-    # Now compute global loss and gradients.
-    gradvars = []
-    with tf.name_scope('gradient_averaging'):
-        all_grads = {}
-        for grad, var in itertools.chain(*tower_gradvars):
-            if grad is not None:
-                all_grads.setdefault(var, []).append(grad)
-        for var, grads in six.iteritems(all_grads):
-            # Average gradients on the same device as the variables
-            # to which they apply.
-            with tf.device(var.device):
-                if len(grads) == 1:
-                    avg_grad = grads[0]
-                else:
-                    avg_grad = tf.multiply(tf.add_n(grads), 1. / len(grads))
+        # Now compute global loss and gradients.
+        gradvars = []
+        with tf.name_scope('gradient_averaging'):
+            all_grads = {}
+            for grad, var in itertools.chain(*tower_gradvars):
+                if grad is not None:
+                    all_grads.setdefault(var, []).append(grad)
+            for var, grads in six.iteritems(all_grads):
+                # Average gradients on the same device as the variables
+                # to which they apply.
+                with tf.device(var.device):
+                    if len(grads) == 1:
+                        avg_grad = grads[0]
+                    else:
+                        avg_grad = tf.multiply(tf.add_n(grads), 1. / len(grads))
 
-            gradvars.append((avg_grad, var))
+                gradvars.append((avg_grad, var))
                 
-    global_step = tf.train.get_global_step()
+        global_step = tf.train.get_global_step()
 
-    # Device that runs the ops to apply global gradient updates.
-    consolidation_device = '/gpu:0' if variable_strategy == 'GPU' else '/cpu:0'
-    with tf.device(consolidation_device):
+        # Device that runs the ops to apply global gradient updates.
+        consolidation_device = '/gpu:0' if variable_strategy == 'GPU' else '/cpu:0'
+        with tf.device(consolidation_device):
 
-        loss = tf.reduce_mean(tower_losses, name='loss')
-        loss_mse = tf.reduce_mean(tower_mses, name='loss_mse')
-        #optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate_ph, beta1=0.2)
-        optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate_ph, 
-                                               momentum=0.9, 
-                                               use_nesterov=True)
+            loss = tf.reduce_mean(tower_losses, name='loss')
+            optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate_ph, beta1=0.5)
 
-    # Create single grouped train op
-    train_op = [optimizer.apply_gradients(gradvars, global_step=global_step)]
+        # Create single grouped train op
+        train_op = [optimizer.apply_gradients(gradvars, global_step=global_step)]
 
-    train_op.extend(update_ops)
-    train_op = tf.group(*train_op)
+        train_op.extend(update_ops)
+        train_op = tf.group(*train_op)
 
-    return train_op, loss, loss_mse
+    return train_op, loss
 
 
 def _discriminator_train_op(discriminator_tower_losses_ph, 
@@ -1165,57 +1230,57 @@ def _discriminator_train_op(discriminator_tower_losses_ph,
                             discriminator_learning_rate_ph, 
                             **kwargs):
 
-    discriminator_tower_losses = tf.unstack(tower_losses_ph, effective_batch_size)
+    with tf.variable_scope("discriminator"):
+        discriminator_tower_losses = tf.unstack(discriminator_tower_losses_ph, 2*effective_batch_size)
 
-    discriminator_tower_params = tf.trainable_variables()
-    discriminator_tower_gradvars = []
-    for tower_grad in kwargs['_tower_grads']:
-        discriminator_tower_gradvars.append(zip(tower_grad, discriminator_tower_params))
+        discriminator_tower_params = tf.trainable_variables()
+        discriminator_tower_gradvars = []
+        for tower_grad in kwargs['_tower_grads']:
+            discriminator_tower_gradvars.append(zip(tower_grad, discriminator_tower_params))
 
-    # Now compute global loss and gradients.
-    discriminator_gradvars = []
-    with tf.name_scope('gradient_averaging'):
-        all_grads = {}
-        for grad, var in itertools.chain(*discriminator_tower_gradvars):
-            if grad is not None:
-                all_grads.setdefault(var, []).append(grad)
-        for var, grads in six.iteritems(all_grads):
-            # Average gradients on the same device as the variables
-            # to which they apply.
-            with tf.device(var.device):
-                if len(grads) == 1:
-                    avg_grad = grads[0]
-                else:
-                    avg_grad = tf.multiply(tf.add_n(grads), 1. / len(grads))
+        # Now compute global loss and gradients.
+        discriminator_gradvars = []
+        with tf.name_scope('gradient_averaging'):
+            all_grads = {}
+            for grad, var in itertools.chain(*discriminator_tower_gradvars):
+                if grad is not None:
+                    all_grads.setdefault(var, []).append(grad)
+            for var, grads in six.iteritems(all_grads):
+                # Average gradients on the same device as the variables
+                # to which they apply.
+                with tf.device(var.device):
+                    if len(grads) == 1:
+                        avg_grad = grads[0]
+                    else:
+                        avg_grad = tf.multiply(tf.add_n(grads), 1. / len(grads))
 
-            discriminator_gradvars.append((avg_grad, var))
+                discriminator_gradvars.append((avg_grad, var))
                 
-    discriminator_global_step = tf.train.get_global_step()
+        discriminator_global_step = tf.train.get_global_step()
 
-    # Device that runs the ops to apply global gradient updates.
-    consolidation_device = '/gpu:0' if variable_strategy == 'GPU' else '/cpu:0'
-    with tf.device(consolidation_device):
+        # Device that runs the ops to apply global gradient updates.
+        consolidation_device = '/gpu:0' if discriminator_variable_strategy == 'GPU' else '/cpu:0'
+        with tf.device(consolidation_device):
 
-        discriminator_loss = tf.reduce_mean(tower_losses, name='loss')
-        #discriminator_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate_ph, beta1=0.2)
-        discriminator_optimizer = tf.train.MomentumOptimizer(
-            learning_rate=learning_rate_ph,
-            momentum=0.9,
-            use_nesterov=True)
+            discriminator_loss = tf.reduce_mean(discriminator_tower_losses, name='loss')
+            discriminator_optimizer = tf.train.AdamOptimizer(
+                learning_rate=discriminator_learning_rate_ph, beta1=0.5)
 
-    # Create single grouped train op
-    discriminator_train_op = [
-        discriminator_optimizer.apply_gradients(discriminator_gradvars, 
-                                  global_step=discriminator_global_step)]
+        # Create single grouped train op
+        discriminator_train_op = [
+            discriminator_optimizer.apply_gradients(discriminator_gradvars, 
+                                      global_step=discriminator_global_step)]
 
-    discriminator_train_op.extend(update_ops)
-    discriminator_train_op = tf.group(*train_op)
+        discriminator_train_op.extend(discriminator_update_ops)
+        discriminator_train_op = tf.group(*discriminator_train_op)
 
     return discriminator_train_op, discriminator_loss
 
 
 def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement, 
          num_intra_threads, **hparams):
+
+    tf.reset_default_graph()
 
     temp = set(tf.all_variables())
 
@@ -1252,6 +1317,8 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                 with tf.Session(config=sess_config) as sess: #Alternative is tf.train.MonitoredTrainingSession()
 
+                    print("Session started")
+
                     sess.run(tf.initialize_variables(set(tf.all_variables()) - temp))
                     #sess.run( tf.global_variables_initializer())
                     temp = set(tf.all_variables())
@@ -1261,8 +1328,11 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                               for i in ____img]
                     img_truth_ph = [tf.placeholder(tf.float32, shape=i.shape, name='img_truth') 
                                     for i in ____img_truth]
-                    del ____img
-                    del ____img_truth
+
+                    _losses_descended_ph = [tf.placeholder(tf.float32, 
+                                                           shape=(1,),
+                                                           name="loss_descended")
+                                           for _ in ____img]
 
                     is_training = True
                     generator_model_fn = get_model_fn(
@@ -1270,19 +1340,18 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                     discriminator_model_fn = get_model_fn(
                         num_gpus, variable_strategy, num_workers, component="discriminator")
 
+                    print("Dataflow established")
+
                     #########################################################################################
 
-                    results = generator_model_fn(img_ph, img_truth_ph, mode=is_training, params=hparams)
-                    _tower_losses = results[0]
-                    _tower_preds = results[1]
-                    _tower_mses = results[2]
-                    update_ops = results[3]
-                    tower_grads = results[4:(4+batch_size)]
+                    results = generator_model_fn(img_ph, mode=is_training, 
+                                                 params=hparams, losses_des=_losses_descended_ph)
+                    _tower_preds = results[0]
+                    update_ops = results[1]
+                    tower_grads = results[2:(2+batch_size)]
 
                     tower_losses_ph = tf.placeholder(tf.float32, shape=(effective_batch_size,), 
                                                      name='tower_losses')
-                    tower_mses_ph = tf.placeholder(tf.float32, shape=(effective_batch_size,), 
-                                                   name='tower_mses')
                     learning_rate_ph = tf.placeholder(tf.float32, name='learning_rate')
 
                     sess.run(tf.initialize_variables(set(tf.all_variables()) - temp))
@@ -1293,7 +1362,11 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                         _img, _img_truth = sess.run([img[i], img_truth[i]])
                         mini_batch_dict.update({img_ph[i]: _img})
                         mini_batch_dict.update({img_truth_ph[i]: _img_truth})
-                    gradvars_pry, preds = sess.run([tower_grads, _tower_preds], feed_dict=mini_batch_dict)
+                        mini_batch_dict.update({_losses_descended_ph[i]: 
+                                                np.array([1.23], dtype=np.float32)})
+
+                    gradvars_pry, preds = sess.run([tower_grads, _tower_preds], 
+                                                   feed_dict=mini_batch_dict)
                     del mini_batch_dict
 
                     tower_grads_ph = [[tf.placeholder(tf.float32, shape=t.shape, name='tower_grads') 
@@ -1301,9 +1374,12 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                        for _ in range(effective_batch_size)]
                     del gradvars_pry
             
-                    train_op, get_loss, get_loss_mse = _train_op(tower_losses_ph, tower_mses_ph, 
-                                                         variable_strategy, update_ops, learning_rate_ph,
-                                                         _tower_grads=tower_grads_ph)
+                    train_op, get_loss = _train_op(tower_losses_ph,
+                                                    variable_strategy, update_ops, 
+                                                    learning_rate_ph,
+                                                    _tower_grads=tower_grads_ph)
+
+                    print("Generator flows established")
 
                     #########################################################################################
 
@@ -1319,10 +1395,10 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                     _discriminator_tower_preds = discriminator_results[1]
                     _discriminator_update_ops = discriminator_results[2]
                     _discriminator_tower_grads = discriminator_results[3:(3+batch_size)]
-                    _discriminator_tower_params = discriminator_results[(3+batch_size):]
 
                     discriminator_tower_losses_ph = tf.placeholder(
-                        tf.float32, shape=(2*effective_batch_size,), name='discriminator_tower_losses')
+                        tf.float32, shape=(2*effective_batch_size,), 
+                        name='discriminator_tower_losses')
                     discriminator_learning_rate_ph = tf.placeholder(
                         tf.float32, name='discriminator_learning_rate')
 
@@ -1331,32 +1407,37 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                     mini_batch_dict = {}
                     for i in range(batch_size):
-                        mini_batch_dict.update({ph: val for ph, val in zip(pred_ph, preds)}
-                        mini_batch_dict.update({ph: val for ph, val in zip(pred_ph, np.random.rand())}
+                        mini_batch_dict.update({ph: np.random.rand(cropsize, cropsize, 1) for ph in pred_ph})
+                        mini_batch_dict.update({ph: val for ph, val in zip(pred_ph, preds)})
+                        mini_batch_dict.update({ph: np.array([0.5]) for ph in label_ph})
                     gradvars_pry = sess.run(_discriminator_tower_grads, feed_dict=mini_batch_dict)
                     del preds
                     del mini_batch_dict
 
                     discriminator_tower_grads_ph = [[
                         tf.placeholder(tf.float32, shape=t.shape, name='discriminator_tower_grads') 
-                        for t in gradvars_pry[0]] for _ in range(effective_batch_size)]
+                        for t in gradvars_pry[0]] for _ in range(2*effective_batch_size)]
                     del gradvars_pry
             
-                    discriminator_train_op, discriminator_get_loss, discriminator_get_loss_mse = _discriminator_train_op(
+                    discriminator_train_op, discriminator_get_loss = _discriminator_train_op(
                         discriminator_tower_losses_ph,
                         variable_strategy,
                         _discriminator_update_ops,
                         discriminator_learning_rate_ph,
                         _tower_grads=discriminator_tower_grads_ph)
 
+                    print("Discriminator flows established")
+
                     #########################################################################################
 
                     sess.run(tf.initialize_variables(set(tf.all_variables()) - temp))
-
                     train_writer = tf.summary.FileWriter( logDir, sess.graph )
 
                     #print(tf.all_variables())
                     saver = tf.train.Saver()
+
+                    learning_rate = initial_learning_rate
+                    discriminator_learning_rate = initial_discriminator_learning_rate
 
                     counter = 0
                     cycleNum = 0
@@ -1367,9 +1448,11 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                     
                         with open(model_dir+"learning_rate.txt") as lrf:
                             try:
-                                learning_rate = [float(line) for line in lrf]
-                                learning_rate = np.float32(learning_rate[0])
-                                print("Using learning rate: {}".format(learning_rate))
+                                learning_rates = [float(line) for line in lrf]
+                                learning_rate = np.float32(learning_rates[0])
+                                discriminator_learning_rate = np.float32(learning_rate[1])
+                                print("Using learning rates: {}, {}".format(
+                                    learning_rate, discriminator_learning_rate))
                             except:
                                 pass
 
@@ -1378,60 +1461,48 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                             counter += 1
 
                             #Apply the generator
-                            tower_losses_list = []
                             tower_preds_list = []
-                            tower_mses_list = []
                             tower_ground_truths_list = []
                             ph_dict = {}
-                            j = 0
-                            for _ in range(increase_batch_size_by_factor):
+                            for j in range(increase_batch_size_by_factor):
+
                                 mini_batch_dict = {}
                                 for i in range(batch_size):
                                     __img, __img_truth = sess.run([img[i], img_truth[i]])
-                                    tower_ground_truths_list += [img for img in ___img_truth]
+                                    tower_ground_truths_list.append(__img_truth)
                                     mini_batch_dict.update({img_ph[i]: __img})
                                     mini_batch_dict.update({img_truth_ph[i]: __img_truth})
 
-                                mini_batch_results = sess.run([_discriminator_tower_losses, 
-                                                               _discriminator_tower_preds, 
-                                                               _discriminator_tower_mses] +
-                                                               _discriminator_tower_grads + 
-                                                               _discriminator_tower_params, 
+                                mini_batch_results = sess.run([_tower_preds] +
+                                                               tower_grads, 
                                                                feed_dict=mini_batch_dict)
 
-                                tower_losses_list += [x for x in mini_batch_results[0]]
-                                tower_preds_list += [x for x in mini_batch_results[1]]
-                                tower_mses_list += [x for x in mini_batch_results[2]]
+                                tower_preds_list += [x for x in mini_batch_results[0]]
 
-                                for i in range(3, 3+batch_size):
+                                for i in range(1, 1+batch_size):
                                     ph_dict.update({ph: val for ph, val in 
                                                     zip(tower_grads_ph[j], 
                                                         mini_batch_results[i])})
-                                    j += 1
 
                                 del mini_batch_dict
                                 del mini_batch_results
 
-                            ph_dict.update({tower_losses_ph: np.asarray(tower_losses_list),
-                                            tower_mses_ph: np.asarray(tower_mses_list),
-                                            learning_rate_ph: learning_rate,
+                            ph_dict.update({learning_rate_ph: learning_rate,
                                             img_ph[0]: __img,
-                                            img_ph[1]: __img,
-                                            img_truth_ph[0]: __img_truth,
-                                            img_truth_ph[1]: __img_truth})
-                    
-                            del tower_losses_list
-                            del tower_mses_list
+                                            img_truth_ph[0]: __img_truth})
 
                             discriminator_tower_losses_list = []
                             discriminator_tower_preds_list = []
                             discriminator_ph_dict = {}
 
                             #Apply the discriminator to the generated images
-                            for j in range(effective_batch_size):
+                            for j in range(increase_batch_size_by_factor):
                                 mini_batch_dict = {}
-                                mini_batch_dict.update({pred_ph: tower_preds_list[j]})
-                                mini_batch_dict.update({label_ph: np.array([0.], dtype=np.float32)})
+
+                                for i in range(batch_size):
+                                    mini_batch_dict.update({pred_ph[i]: tower_preds_list[batch_size*j+i]})
+                                    mini_batch_dict.update({label_ph[i]: np.array([1.], dtype=np.float32)})
+                                    discriminator_ph_dict.update({pred_ph[i]: tower_preds_list[batch_size*j+i]})
 
                                 mini_batch_results = sess.run([_discriminator_tower_losses, 
                                                                _discriminator_tower_preds] +
@@ -1443,7 +1514,7 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                                 for i in range(2, 2+batch_size):
                                     discriminator_ph_dict.update({ph: val for ph, val in 
-                                                                  zip(discriminator_tower_grads_ph[j], 
+                                                                  zip(discriminator_tower_grads_ph[batch_size*j+i-2], 
                                                                       mini_batch_results[i])})
 
                             del tower_preds_list
@@ -1452,8 +1523,10 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                             #Apply the discriminator to real images
                             for j in range(effective_batch_size):
                                 mini_batch_dict = {}
-                                mini_batch_dict.update({pred_ph: tower_ground_truths_list[j]})
-                                mini_batch_dict.update({label_ph: np.array([1.], dtype=np.float32)})
+                                for i in range(batch_size):
+                                    mini_batch_dict.update({pred_ph[i]: np.reshape(tower_ground_truths_list[batch_size*j+i],
+                                                                                   (cropsize, cropsize, 1))})
+                                    mini_batch_dict.update({label_ph[i]: np.array([0.], dtype=np.float32)})
 
                                 mini_batch_results = sess.run([_discriminator_tower_losses, 
                                                                _discriminator_tower_preds] +
@@ -1465,47 +1538,158 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                                 for i in range(2, 2+batch_size):
                                     discriminator_ph_dict.update({ph: val for ph, val in 
-                                                                  zip(discriminator_tower_grads_ph[j+effective_batch_size], 
+                                                                  zip(discriminator_tower_grads_ph[
+                                                                      batch_size*j+i-2+effective_batch_size], 
                                                                       mini_batch_results[i])})
 
-                            generation_losses = np.asarray(discriminator_tower_losses_list[:effective_batch_size])
-                            discrimination_losses = np.asarray(discriminator_tower_losses_list[:effective_batch_size] + 
-                                                               discriminator_tower_losses_list[effective_batch_size:])
+                            discriminator_ph_dict.update({discriminator_learning_rate_ph: discriminator_learning_rate})
 
-                            _, discriminator_loss = sess.run([discriminator_train_op, discriminator_get_loss],
+                            #if counter <= 1 or not counter % save_result_every_n_batches:
+                            #    try:
+                            #        save_input_loc = model_dir+"input-"+str(counter)+".tif"
+                            #        save_output_loc = model_dir+"output-"+str(counter)+".tif"
+                            #        Image.fromarray(__img.reshape(cropsize, cropsize).astype(np.float32)).save( save_input_loc )
+                            #        Image.fromarray(__img_truth.reshape(cropsize, cropsize).astype(np.float32)).save( save_output_loc )
+                            #    except:
+                            #        print("Image save failed")
+
+                            gen_losses = [-x for x in discriminator_tower_losses_list[:effective_batch_size]]
+                            ph_dict.update({ph: np.reshape(val, (batch_size,)) for ph, val in zip(_losses_descended_ph, gen_losses)})
+
+                            generation_losses = np.reshape(np.asarray(gen_losses), (effective_batch_size,))
+                            ph_dict.update({tower_losses_ph: generation_losses})
+
+                            discrimination_losses = np.reshape(np.asarray(discriminator_tower_losses_list),
+                                                               (2*effective_batch_size,))
+                            discriminator_ph_dict.update({discriminator_tower_losses_ph: discrimination_losses})
+
+                            #Train the discriminator
+                            _, discr_loss = sess.run([discriminator_train_op, discriminator_get_loss],
                                                               feed_dict=discriminator_ph_dict)
+                            del discriminator_ph_dict
 
-                            _, actual_loss, loss_mse = sess.run([train_op, get_loss, get_loss_mse],
-                                                                  feed_dict=ph_dict)
+                            #Train the generator
+                            _, gen_loss = sess.run([train_op, get_loss], feed_dict=ph_dict)
                             del ph_dict
 
+                            #Save outputs occasionally
+                            if counter <= 1 or not counter % save_result_every_n_batches:
+                                try:
+                                    save_input_loc = model_dir+"input-"+str(counter)+".tif"
+                                    save_output_loc = model_dir+"output-"+str(counter)+".tif"
+                                    Image.fromarray(__img.reshape(cropsize, cropsize).astype(np.float32)).save( save_input_loc )
+                                    Image.fromarray(__img_truth.reshape(cropsize, cropsize).astype(np.float32)).save( save_output_loc )
+                                except:
+                                    print("Image save failed")
+
                             try:
-                                log.write("Iter: {}, Loss: {:.8f}".format(counter, float(loss_mse)))
+                                log.write("Iter: {}, Gen loss: {:.8f}, Discr loss: {:.8f}".format(
+                                    counter, gen_loss, discr_loss))
                             except:
                                 print("Failed to write to log")
 
                             if not counter % val_skip_n:
+
+                                #Generate micrographs
                                 mini_batch_dict = {}
                                 for i in range(batch_size):
-                                    ___img, ___img_truth = sess.run([img_val[i], img_val_truth[i]])
-                                    mini_batch_dict.update({img_ph[i]: ___img})
-                                    mini_batch_dict.update({img_truth_ph[i]: ___img_truth})
+                                    __img, __img_truth = sess.run([img[i], img_truth[i]])
+                                    tower_ground_truths_list.append(__img_truth)
+                                    mini_batch_dict.update({img_ph[i]: __img})
+                                    mini_batch_dict.update({img_truth_ph[i]: __img_truth})
 
-                                mini_batch_results = sess.run([_tower_losses, _tower_preds, _tower_mses] +
-                                                                tower_grads,
-                                                                feed_dict=mini_batch_dict)
-                                val_loss = np.mean(np.asarray([x for x in mini_batch_results[2]]))
+                                mini_batch_results = sess.run([_tower_preds] +
+                                                               tower_grads, 
+                                                               feed_dict=mini_batch_dict)
+
+                                tower_preds_list += [x for x in mini_batch_results[0]]
+
+                                for i in range(1, 1+batch_size):
+                                    ph_dict.update({ph: val for ph, val in 
+                                                    zip(tower_grads_ph[j], 
+                                                        mini_batch_results[i])})
+                                    j += 1
+
+                                del mini_batch_dict
+                                del mini_batch_results
+
+                                discriminator_tower_losses_list = []
+                                discriminator_tower_preds_list = []
+                                discriminator_ph_dict = {}
+
+                                #Apply discriminator to fake micrographs
+                                mini_batch_dict = {}
+                                for i in range(batch_size):
+                                    mini_batch_dict.update({pred_ph[i]: np.reshape(tower_ground_truths_list[batch_size*j+i],
+                                                                                   (cropsize, cropsize, 1))})
+                                    mini_batch_dict.update({label_ph[i]: np.array([0.], dtype=np.float32)})
+
+                                mini_batch_results = sess.run([_discriminator_tower_losses, 
+                                                               _discriminator_tower_preds] +
+                                                               _discriminator_tower_grads,
+                                                               feed_dict=mini_batch_dict)
+
+                                discriminator_tower_losses_list += [x for x in mini_batch_results[0]]
+                                discriminator_tower_preds_list += [x for x in mini_batch_results[1]]
+
+                                for i in range(2, 2+batch_size):
+                                    discriminator_ph_dict.update({ph: val for ph, val in 
+                                                                  zip(discriminator_tower_grads_ph[
+                                                                      batch_size*j+i-2+effective_batch_size], 
+                                                                      mini_batch_results[i])})
+
+                                #Apply discriminator to real micrographs
+                                mini_batch_dict = {}
+                                for i in range(batch_size):
+                                    mini_batch_dict.update({pred_ph[i]: np.reshape(tower_ground_truths_list[batch_size*j+i],
+                                                                                   (cropsize, cropsize, 1))})
+                                    mini_batch_dict.update({label_ph[i]: np.array([0.], dtype=np.float32)})
+
+                                mini_batch_results = sess.run([_discriminator_tower_losses, 
+                                                               _discriminator_tower_preds] +
+                                                               _discriminator_tower_grads,
+                                                               feed_dict=mini_batch_dict)
+
+                                discriminator_tower_losses_list += [x for x in mini_batch_results[0]]
+                                discriminator_tower_preds_list += [x for x in mini_batch_results[1]]
+
+                                for i in range(2, 2+batch_size):
+                                    discriminator_ph_dict.update({ph: val for ph, val in 
+                                                                  zip(discriminator_tower_grads_ph[
+                                                                      batch_size*j+i-2+effective_batch_size], 
+                                                                      mini_batch_results[i])})
+
+                                gen_losses = [-x for x in discriminator_tower_losses_list[:effective_batch_size]]
+                                ph_dict.update({ph: np.reshape(val, (batch_size,)) 
+                                                for ph, val in zip(_losses_descended_ph, gen_losses)})
+
+                                generation_losses = np.reshape(np.asarray(gen_losses), (effective_batch_size,))
+                                ph_dict.update({tower_losses_ph: generation_losses})
+
+                                discrimination_losses = np.reshape(np.asarray(discriminator_tower_losses_list),
+                                                                    (2*effective_batch_size,))
+                                discriminator_ph_dict.update({discriminator_tower_losses_ph: discrimination_losses})
+
+                                #Train the discriminator
+                                _, discr_loss_val = sess.run([discriminator_train_op, discriminator_get_loss],
+                                                                    feed_dict=discriminator_ph_dict)
+                                del discriminator_ph_dict
+
+                                #Train the generator
+                                _, gen_loss_val = sess.run([train_op, get_loss], feed_dict=ph_dict)
+                                del ph_dict
 
                                 try:
-                                    val_log.write("Iter: {}, Loss: {:.8f}".format(counter, float(val_loss)))
+                                    val_log.write("Iter: {}, Gen Val: {:.8f}, Disc Val".format(
+                                        counter, gen_loss_val, discr_loss_val))
                                 except:
                                     print("Failed to write to val log")
 
-                                print("Iter: {}, Loss: {:.6f}, Huberised loss: {:.6f}, Val loss: {:.6f}".format(
-                                      counter, loss_value, actual_loss, val_loss))
+                                print("Iter: {}, Gen loss: {:.8f}, Discr loss: {:.8f}, Gen Val: {:.8f}, Discr Val: {:.8f}".format(
+                                      counter, gen_loss, discr_loss, gen_loss_val, discr_loss_val))
                             else:
-                                print("Iter: {}, Loss: {:.6f}, Huberised loss: {:.6f}".format(
-                                      counter, loss_value, actual_loss))
+                                print("Iter: {}, Gen loss: {:.8f}, Discr loss: {:.8f}".format(
+                                    counter, gen_loss, discr_loss))
 
                             #train_writer.add_summary(summary, counter)
 
