@@ -43,38 +43,6 @@ log_file = model_dir+"log.txt"
 save_result_every_n_batches = 1000
 
 
-def aligner():
-
-    #Cropping variables
-    widths = [tf.get_variable("width_"+str(i), [1],
-                              initializer=tf.constant(0., [1])) 
-              for i in range(num_imgs)]
-    widths = [tf.constant(float(cropsize/img_size), [1]) + 
-              super_tanh(width, width_height_size)
-              for width in widths]
-
-    heights = [tf.get_variable("height_"+str(i), [1],
-                              initializer=tf.constant(float(cropsize), [1])) 
-              for i in range(num_imgs)]
-    heights = [tf.constant(float(cropsize/img_size), [1]) + 
-              super_tanh(height, width_height_size)
-              for height in heights]
-
-    xs = [tf.get_variable("x_"+str(i), [1],
-                              initializer=tf.constant(0., [1]))
-              for i in range(num_imgs)]
-    xs = [tf.constant(0.5, [1]) + super_tanh(x, x_y_size) for x in xs]
-
-    ys = [tf.get_variable("y_"+str(i), [1],
-                              initializer=tf.constant(0., [1]))
-              for i in range(num_imgs)]
-    ys = [tf.constant(0.5, [1]) + super_tanh(y, x_y_size) for y in ys]
-
-    angles = [tf.get_variable("angle_"+str(i), [1],
-                              initializer=tf.constant(0., [1])) 
-              for i in range(num_imgs)]
-    angles = [super_tanh(angle, angle_size) for angle in angles]
-
 def architecture(amplitude_initial, symbols, symbol_ests, size_lims, num_imgs):
     """
     Atrous convolutional encoder-decoder noise-removing network
@@ -115,10 +83,12 @@ def architecture(amplitude_initial, symbols, symbol_ests, size_lims, num_imgs):
     return amplitude, phase, aberrations, defocus_offset
 
 def energy2wavelength(v0):
+
     #Wavelength in Angstroms
     m0=0.5109989461*10**3 # keV / c**2
     h=4.135667662*10**(-15)*10**(-3) # eV * s
     c=2.99792458*10**8 # m / s
+
     return h*c/np.sqrt(v0*(2*m0+v0))*1.e10
 
 def spatial_frequencies(shape ,sampling, return_polar=False, 
@@ -254,8 +224,8 @@ def save_returned_tensor(img, loc, size):
 def experiment(stack, symbols, symbol_ests, middle_focus_img, 
                size_lims, cropsize, energy=200, focal_spread_est=None):
 
-    mean_of_stack = np.mean([np.mean(img) for img in stack])
-    root_stack = [tf.convert_to_tensor(np.sqrt(img/mean_of_stack), dtype=tf.float32)
+    stack_means = [tf.convert_to_tensor(np.mean(img), dtype=tf.float32) for img in stack]
+    root_stack = [tf.convert_to_tensor(np.sqrt(img), dtype=tf.float32)
                   for img in stack]
 
     if not focal_spread:
@@ -288,7 +258,7 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
         aberrations['a20'] = defocus
         ctf = get_ctf(theta, phi, wavelength, aberrations, focal_spread)
         backpropagation = tf.ifft2d(tf.fft2d(wavefunction)*ctf)
-        backpropagations.append(backpropagation/tf.reduce_mean(backpropagation))
+        backpropagations.append(stack_means[i]*backpropagation/tf.reduce_mean(backpropagation))
 
     #Calculate losses
     mse_losses = []
@@ -304,9 +274,9 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
         log.flush()
 
         with tf.Session() as sess:
+
             counter = 0
             while True:
-
                 while time.time()-time0 < modelSavePeriod:
                     counter += 1
 
@@ -347,7 +317,6 @@ def load_image(addr, resizeSize=None, imgType=np.float32):
     try:
         img = imread(addr, mode='F')
     except:
-        img = 0.5*np.ones((512,512))
         print("Image read failed")
 
     if resizeSize:
@@ -384,14 +353,84 @@ def main(dir):
 
     stack = load_stack(dir)
 
+    num_imgs = len(stack)
+
+    stack_min = np.min([np.min(img) for img in stack])
+    stack_max = np.max([np.max(img) for img in stack])
+    stack = [(img-stack_min) / (stack_max-stack_min) for img in stack]
+
     symbols = ['a20', 'a40']
     symbol_ests = [50., 0.]
     middle_focus_img = 8
     energy = 200 #keV
     focal_spread = 0.
 
-    cropsize = int(0.7*stack[0].shape[0])
+    #Orb feature detector
+    orb = cv2.ORB_create()
+    orb_descr = [orb.detectAndCompute((255.*img).astype(np.uint8), None) for img in stack]
 
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+    homographies = []
+    for i in range(1, num_imgs):
+
+        orb_descr_mini = orb.detectAndCompute((255.*stack[i-1]).astype(np.uint8), None)
+        orb_descr = orb.detectAndCompute((255.*stack[i]).astype(np.uint8), None)
+
+        matches = bf.knnMatch(orb_descr_mini[1], orb_descr[i][1], k=2)
+        
+        #Apply Lowe ratio test
+        good = []
+        for m, n in matches:
+            if m.distance < 0.75*n.distance:
+                good.append([m])
+
+        src_pts = np.float32([ orb_descr_mini[0][m.queryIdx].pt for m in good ]).reshape(-1,1,2)
+        dst_pts = np.float32([ orb_descr[0][m.trainIdx].pt for m in good ]).reshape(-1,1,2)
+
+        M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        homographies.append(M)
+
+    #Homographies from start to middle
+    left_homos = [homographies[0]]
+    for i in range(1, middle_focus_img-1):
+        left_homos.append(np.dot(homographies[i], left_homos[i-1]))
+    left_homos.reverse()
+
+    right_homos = [homographies[middle_focus_img-1]]
+    for i in range(middle_focus_img-1, num_imgs-1):
+        right_homos.append(np.dot(homographies[i], right_homos[i-1]))
+    right_homos = [np.linalg.inv(homo) for homo in right_homos]
+
+    num_left_homos = len(left_homos)
+    for i in range(num_left_homos):
+        stack[i] = cv2.perspectiveTransform(stack[i], left_homos[i])
+
+    for i in range(len(right_homos)):
+        stack[i+num_left_homos+1] = cv2.perspectiveTransform(
+            stack[i+num_left_homos+1], right_homos[i])
+
+    #Crop centres from transformed stack
+    side = int(np.log2(0.7*stack[0].shape[0]))**2
+
+    for i in range(num_imgs):
+
+        left = int(centres[0][0]-side/2)
+        bottom = int(centres[0][1]-side/2)
+
+        horiz_over = centres[0][0]-int(centres[0][0])
+        vert_over = centres[0][1]-int(centres[0][1])
+        prop_tl = horiz_over*vert_over
+        prop_tr = (1.-horiz_over)*vert_over
+        prop_bl = horiz_over*(1.-vert_over)
+        prop_br = (1.-horiz_over)*(1.-vert_over)
+            
+        crop = (prop_tl*img[(bottom+1):(bottom+side+1), left:(left+side)]+
+                prop_tr*img[(bottom+1):(bottom+side+1), (left+1):(left+side+1)]+
+                prop_bl*img[bottom:(bottom+side), left:(left+side)]+
+                prop_br*img[bottom:(bottom+side), (left+1):(left+side+1)])
+
+        stack[i] = crop
 
     experiment(stack, symbols, symbol_ests, middle_focus_img, 
                size_lims, cropsize, energy, focal_spread)
@@ -404,6 +443,36 @@ if __name__ == '__main__':
 
     main(dir)
 
+#def aligner():
 
+#    #Cropping variables
+#    widths = [tf.get_variable("width_"+str(i), [1],
+#                              initializer=tf.constant(0., [1])) 
+#              for i in range(num_imgs)]
+#    widths = [tf.constant(float(cropsize/img_size), [1]) + 
+#              super_tanh(width, width_height_size)
+#              for width in widths]
+
+#    heights = [tf.get_variable("height_"+str(i), [1],
+#                              initializer=tf.constant(float(cropsize), [1])) 
+#              for i in range(num_imgs)]
+#    heights = [tf.constant(float(cropsize/img_size), [1]) + 
+#              super_tanh(height, width_height_size)
+#              for height in heights]
+
+#    xs = [tf.get_variable("x_"+str(i), [1],
+#                              initializer=tf.constant(0., [1]))
+#              for i in range(num_imgs)]
+#    xs = [tf.constant(0.5, [1]) + super_tanh(x, x_y_size) for x in xs]
+
+#    ys = [tf.get_variable("y_"+str(i), [1],
+#                              initializer=tf.constant(0., [1]))
+#              for i in range(num_imgs)]
+#    ys = [tf.constant(0.5, [1]) + super_tanh(y, x_y_size) for y in ys]
+
+#    angles = [tf.get_variable("angle_"+str(i), [1],
+#                              initializer=tf.constant(0., [1])) 
+#              for i in range(num_imgs)]
+#    angles = [super_tanh(angle, angle_size) for angle in angles]
 
 
