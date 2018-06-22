@@ -143,6 +143,7 @@ def get_spatial_envelope(theta, phi, wavelength, aberrations, convergence_angle)
                     (a["a66"]*tf.cos(6.*(phi-a["phi66"]))+\
                     a["a64"]*tf.cos(4.*(phi-a["phi64"]))+\
                     a["a62"]*tf.cos(2.*(phi-a["phi62"]))+a["a60"])*theta**5)
+
         dchi_dphi=-2*tf.pi/wavelength*(\
             1/2.*(2.*a["a22"]*tf.sin(2.*(phi-a["phi22"])))*theta +\
             1/3.*(3.*a["a33"]*tf.sin(3.*(phi-a["phi33"]))+\
@@ -155,7 +156,8 @@ def get_spatial_envelope(theta, phi, wavelength, aberrations, convergence_angle)
             1/6.*(6.*a["a66"]*tf.sin(6.*(phi-a["phi66"]))+\
                     4.*a["a64"]*tf.sin(4.*(phi-a["phi64"]))+\
                     2.*a["a62"]*tf.sin(2.*(phi-a["phi62"])))*theta**5)
-        spatial=tf.exp(-tf.sign(convergence_angle)*(
+
+        spatial=tf.exp(-np.sign(convergence_angle)*(
             convergence_angle/2)**2*(dchi_dq**2+dchi_dphi**2))
     else:
         spatial=None
@@ -164,7 +166,7 @@ def get_spatial_envelope(theta, phi, wavelength, aberrations, convergence_angle)
 
 def get_temporal_envelope(theta, wavelength, focal_spread):
 
-    temporal = tf.exp(-tf.sign(focal_spread)*(
+    temporal = tf.exp(-np.sign(focal_spread)*(
         .5*np.pi/wavelength*focal_spread*theta**2)**2)
 
     return temporal
@@ -195,7 +197,7 @@ def get_chi(theta, phi, wavelength, aberrations):
         1/6.*(a["a66"]*tf.cos(6.*(phi-a["phi66"]))+\
                 a["a64"]*tf.cos(4.*(phi-a["phi64"]))+\
                 a["a62"]*tf.cos(2.*(phi-a["phi62"]))+a["a60"])*theta**6
-    chi*=2.*np.pi/wavelength
+    chi *= 2.*np.pi/wavelength
 
     return chi
 
@@ -268,6 +270,7 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
                 tf.losses.mean_squared_error(root_stack[i], backpropagations[i])))
     mse = tf.add_n(mse_losses) / float(num_imgs)
 
+    learning_rate_ph = tf.placeholder(tf.float32, name="learning_rate")
     train_op = tf.train.AdamOptimizer(learning_rate=learning_rate_ph).minimize(mse)
 
     with open(log_file, 'a') as log:
@@ -275,8 +278,18 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
 
         with tf.Session() as sess:
 
+            learning_rate = 0.001
             counter = 0
             while True:
+
+                try:
+                    with open(model_dir+"learning_rate.txt", "r") as lrf:
+                        learning_rate_list = [float(line) for line in lrf]
+                        learning_rate = np.float32(learning_rate_list[0])
+                        print("Using learning rate: {}".format(learning_rate))
+                except:
+                    pass
+
                 while time.time()-time0 < modelSavePeriod:
                     counter += 1
 
@@ -288,7 +301,8 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
                             save_stack_loc = [model_dir+"output-"+str(i)+".tif" 
                                               for i in range(num_imgs)]
 
-                            results = sess.run([train_op, mse, amplitude, phase] + backpropagations)
+                            results = sess.run([train_op, mse, amplitude, phase] + backpropagations,
+                                               feed_dict={learning_rate_ph: learning_rate})
                             mse = results[1]
                             _amplitude = results[2]
                             _phase = results[3]
@@ -325,7 +339,7 @@ def load_image(addr, resizeSize=None, imgType=np.float32):
     return img.astype(imgType)
 
 def load_stack(dir):
-    return [imread(file, mode='F') 
+    return [imread(dir+file, mode='F') 
             for file in os.listdir(dir) if '.tif' in file]
 
 def scale0to1(img):
@@ -369,7 +383,7 @@ def main(dir):
     orb = cv2.ORB_create()
     orb_descr = [orb.detectAndCompute((255.*img).astype(np.uint8), None) for img in stack]
 
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    bf = cv2.BFMatcher()#cv2.NORM_HAMMING, crossCheck=True)
 
     homographies = []
     for i in range(1, num_imgs):
@@ -377,7 +391,7 @@ def main(dir):
         orb_descr_mini = orb.detectAndCompute((255.*stack[i-1]).astype(np.uint8), None)
         orb_descr = orb.detectAndCompute((255.*stack[i]).astype(np.uint8), None)
 
-        matches = bf.knnMatch(orb_descr_mini[1], orb_descr[i][1], k=2)
+        matches = bf.knnMatch(orb_descr_mini[1], orb_descr[1], k=2)
         
         #Apply Lowe ratio test
         good = []
@@ -439,7 +453,9 @@ def main(dir):
 
 if __name__ == '__main__':
 
-    dir = "E:/dump"
+    dir = r'\\flexo.ads.warwick.ac.uk\shared39\EOL2100\2100\Users\Jeffrey-Ede\series72\stack1'
+    if dir[-1] != ['\\']:
+        dir += '\\'
 
     main(dir)
 
