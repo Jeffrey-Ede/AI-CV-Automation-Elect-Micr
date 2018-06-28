@@ -1,4 +1,6 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
 import numpy as np
 import scipy.misc
 import scipy.io
@@ -6,32 +8,66 @@ import math
 import tensorflow as tf
 from sys import stderr
 from functools import reduce
-import time  
+import time
+
+import cv2
+
+#Helper functions
+def imread(path):
+    return scipy.misc.imread(path, mode='F')
+
+def imsave(path, img):
+    scipy.misc.imsave(path, img)
+
+def scale0to1(img):
+    """Rescale image between 0 and 1"""
+    min = np.min(img)
+    max = np.max(img)
+    if min == max:
+        img.fill(0.5)
+    else:
+        img = (img-min) / (max-min)
+    return img
+
+def disp(img):
+    cv2.namedWindow('CV_Window', cv2.WINDOW_NORMAL)
+    cv2.imshow('CV_Window', scale0to1(img))
+    cv2.waitKey(0)
+    return
 
 def transfer_style(img_content,
-                   img_style, 
-                   img_mask=None, 
-                   weight_mask=None, 
-                   weight_style=2.e2,
+                   img_style,
+                   img_mask=None,
+                   shape=None,
+                   weight_content=1.,
+                   weight_style=25., #Heavily weight style
+                   weight_mask=None,
+                   weight_tv=40.,
                    rel_content=None,
                    rel_style=None,
                    rel_mask=None,
-                   input_noise=0.1,
+                   input_noise=0.6,
                    n_checkpoints=10,
-                   n_iterations_checkpoint=100,
+                   n_iterations_checkpoint=25,
                    save_checkpoint_imgs=False,
                    path_output='output',
-                   layers_style_weights = [0.2,0.2,0.2,0.2,0.2]):
+                   layers_style_weights = [0.2,0.2,0.2,0.2,0.2], #Deeper weights towards right
+                   greyscale=True,
+                   logging=False):
     """
     Transfers the style of one image to the content of another. Optionally, 
     emphasise conservation of original content using a mask
     img_content: Image to preserve the content of. Use list for multiple
     img_style: Image to restyle the content image with. Use list for multiple
-    img_mask: Optional mask where 1.0s indicate content to be conserved in its original.
-    Use list for multiple
-    form and 0.0s indicate content to restyle without this bias
-    weight_mask: Weight of optional masking to loss
+    img_mask: Optional mask where 1.0s indicate content to be conserved in its original
+    and 0.0s indicate content to restyle without this bias. Use list for multiple
+    shape: Height and width of image to synthesize. If not provided, it defaults to the shape of the 
+    first content image
+    weight_content: Weight of content loss
     weight_style: Weight of style loss
+    weight_mask: Weight of optional masking loss
+    weight_threading: Weight of total variation loss to minimize differences between adjacent 
+    pixels. This helps produce smoother images that look more natural. Pass None or 0. to disable
     rel_content: Relative contribution of each content image. Only needed for multiple
     rel_style: Relative contribution of each style image. Only needed for multiple
     rel_mask: Relative contribtion each mask region in case of overlap. Only needed for multiple
@@ -45,33 +81,50 @@ def transfer_style(img_content,
     path_output: Location to save checkpoint images if that option is enabled
     layers_style_weights: 5 element array with proportional contributions of VGG19 layers
     to style loss
+    greyscale: Keep true to optimize for greyscale images
+    logging: Enable to output images to the output director during convergence
     """
 
+    #Convert inputs to lists if they are single images
     if not isinstance(img_content, (list,)):
         img_content = [img_content]
-
     if not isinstance(img_style, (list,)):
         img_style = [img_style]
-
     if weight_mask and not isinstance(weight_mask, (list,)):
         weight_mask = [weight_mask]
+
+    if not shape:
+        shape = img_content[0].shape
+
+    #Normalise relative contents so that they sum to 1.
+    if rel_content:
+        sum = np.sum(np.asarray(rel_content))
+        rel_content = [x/sum for x in rel_content]
+    elif len(img_content) > 1:
+        weight_content /= len(img_content)
+    if rel_style:
+        sum = np.sum(np.asarray(rel_style))
+        rel_style = [x/sum for x in rel_style]
+    elif len(img_style) > 1:
+        weight_style /= len(img_style)
+    if rel_mask:
+        sum = np.sum(np.asarray(rel_mask))
+        rel_mask = [x/sum for x in rel_mask]
+    elif img_mask:
+        if len(img_mask) > 1:
+            weight_mask /= len(img_mask)
+
+    if path_output[-1] != '/' and path_output[-1] != '\\':
+        path_output += '/'
 
     ## Layers
     layer_content = 'conv4_2' 
     layers_style = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
 
     ## VGG19 model
-    path_VGG19 = 'D:/imagenet-vgg-verydeep-19.mat'
+    path_VGG19 = 'X:/Jeffrey-Ede/models/neural-networks/style-transfer/imagenet-vgg-verydeep-19.mat'
     # VGG19 mean for standardisation (RGB)
     VGG19_mean = np.array([123.68, 116.779, 103.939]).reshape((1,1,1,3))
-
-    ### Helper functions
-    def imread(path):
-        return scipy.misc.imread(path).astype(np.float)   # returns RGB format
-
-    def imsave(path, img):
-        img = np.clip(img, 0, 255).astype(np.uint8)
-        scipy.misc.imsave(path, img)
     
     def imgpreprocess(image):
         image = image[np.newaxis,:,:,:]
@@ -95,19 +148,36 @@ def transfer_style(img_content,
     if not os.path.exists(path_output):
         os.mkdir(path_output)
 
-    # convert if greyscale
-    if len(img_content.shape)==2:
-        img_content = to_rgb(img_content)
+    def is_grey(img):
+        if len(img.shape) == 2:
+            return True
+        elif img.shape[2] != 1:
+            return True
 
-    if len(img_style.shape)==2:
-        img_style = to_rgb(img_style)
+    if greyscale:
+        for i in range(len(img_content)):
+            if len(img_content[i].shape) > 2:
+                if img_content[i].shape[2] > 1:
+                    img_content[i] = np.mean(img_content[i], axis=2)
+        for i in range(len(img_style)):
+            if len(img_style[i].shape) > 2:
+                if img_style[i].shape[2] > 1:
+                    img_style[i] = np.mean(img_style[i], axis=2)
 
-    # resize style image to match content
-    img_style = scipy.misc.imresize(img_style, img_content.shape)
+    #Resize images
+    img_style = [cv2.resize(style[:min(style.shape[:2]), :min(style.shape[:2])], shape) 
+                 for style in img_style]
+    img_content = [cv2.resize(content[:min(content.shape[:2]), :min(content.shape[:2])], shape) 
+                   for content in img_content]
+
+    #Convert to rgb if greyscale
+    img_content = [to_rgb(255.999*img) if is_grey(img) else 255.999*img for img in img_content]
+    img_style = [to_rgb(255.999*img) if is_grey(img) else 255.999*img for img in img_style]
 
     # apply noise to create initial "canvas" using first content image
     noise = np.random.uniform(
-            img_content[0].mean()-img_content[0].std(), img_content[0].mean()+img_content[0].std(),
+            img_content[0].mean()-img_content[0].std(), 
+            img_content[0].mean()+img_content[0].std(),
             (img_content[0].shape)).astype('float32')
     img_initial = noise * input_noise + img_content[0] * (1-input_noise)
 
@@ -143,9 +213,8 @@ def transfer_style(img_content,
 
     # Setup network
     with tf.Session() as sess:
-        a, h, w, d     = img_content.shape
         net = {}
-        net['input']   = tf.Variable(np.zeros((a, h, w, d), dtype=np.float32))
+        net['input']   = tf.Variable(np.zeros((1, shape[0], shape[1], 3), dtype=np.float32))
         net['conv1_1']  = _conv2d_relu(net['input'], 0, 'conv1_1')
         net['conv1_2']  = _conv2d_relu(net['conv1_1'], 2, 'conv1_2')
         net['avgpool1'] = _avgpool(net['conv1_2'])
@@ -181,11 +250,17 @@ def transfer_style(img_content,
         return loss
 
     with tf.Session() as sess:
-        sess.run(net['input'].assign(img_content))
-        p = sess.run(net[layer_content])  #Get activation output for content layer
-        x = net[layer_content]
-        p = tf.convert_to_tensor(p)
-        content_loss = content_layer_loss(p, x)
+        content_loss = 0.
+        for i, content in enumerate(img_content):
+            sess.run(net['input'].assign(content))
+            p = sess.run(net[layer_content])  #Get activation output for content layer
+            x = net[layer_content]
+            p = tf.convert_to_tensor(p)
+
+            if rel_content:
+                content_loss += rel_content[i]*content_layer_loss(p, x)
+            else:
+                content_loss += content_layer_loss(p, x)
 
     ###STYLE LOSS: FUNCTION TO CALCULATE AND INSTANTIATION
 
@@ -204,32 +279,74 @@ def transfer_style(img_content,
         return G
 
     with tf.Session() as sess:
-        sess.run(net['input'].assign(img_style))
+
         style_loss = 0.
-        # style loss is calculated for each style layer and summed
-        for layer, weight in zip(layers_style, layers_style_weights):
-            a = sess.run(net[layer])
-            x = net[layer]
-            a = tf.convert_to_tensor(a)
-            style_loss += style_layer_loss(a, x)
+        for i, style in enumerate(img_style):
+            sess.run(net['input'].assign(style))
+            # style loss is calculated for each style layer and summed
+            loss = 0.
+            for layer, weight in zip(layers_style, layers_style_weights):
+                a = sess.run(net[layer])
+                x = net[layer]
+                a = tf.convert_to_tensor(a)
+                loss += style_layer_loss(a, x)
+
+            if rel_style:
+                style_loss += rel_style[i]*loss
+            else:
+                style_loss += loss
 
     if weight_mask:
         def get_mask_loss(a, x):
-            #Calculated mse between marked pixels
-            diff2 = img_mask_tensor * (a-x)**2
+            #Calculated mse between non-zero mask pixels
+            prod = float(shape[0]*shape[1])
+            if greyscale:
+                diff2 = img_mask_tensor * (tf.reduce_mean(a, axis=3)-tf.reduce_mean(x, axis=3))**2 / (9.*prod)
+            else:
+                prod *= shape[2]
+                diff2 = img_mask_tensor * (a-x)**2 / prod
             sum_marked_diffs = tf.reduce_sum(diff2)
             return sum_marked_diffs
 
         with tf.Session() as sess:
-            mask_loss = get_mask_loss(net['input'], img_content_tensor)
+            losses = [get_mask_loss(net['input'], x) for x in img_content_tensors]
+            if rel_mask:
+                mask_loss = tf.add_n([rel*loss for rel, loss in zip(rel_mask, losses)])
+            else:
+                mask_loss = tf.add_n([loss for loss in losses])
+
+    if weight_threading:
+        def get_threading_loss(a, x):
+            volume = float((shape[0]-1)*shape[1]+shape[0]*(shape[1]-1))
+            if greyscale:
+                diff2 = ((tf.reduce_mean(a, axis=3)[1:,:]-tf.reduce_mean(x, axis=3)[:(shape[1]-1),:])**2 +
+                         (tf.reduce_mean(a, axis=3)[:,1:]-tf.reduce_mean(x, axis=3)[:,:(shape[0]-1)])**2 
+                         ) / (9.*volume)
+            else:
+                volume *= shape[2]
+                diff2 = ((tf.reduce_mean(a, axis=3)[:,1:,:]-tf.reduce_mean(x, axis=3)[:,:(shape[1]-1),:])**2 +
+                         (tf.reduce_mean(a, axis=3)[:,:,1:]-tf.reduce_mean(x, axis=3)[:,:,:(shape[0]-1)])**2 
+                         ) / (9.*volume)
+            sum_diff2 = tf.reduce_sum(diff2)
+            return sum_diff2
+
+        with tf.Session() as sess:
+            threading_loss = get_threading_loss(net['input'])
         
     ### Define loss function and minimise
     with tf.Session() as sess:
+
         # loss function
-        if weight_mask:
-            L_total  = content_loss + weight_style * style_loss + weight_mask * mask_loss
+        if weight_content != 1.:
+            L_total  = weight_content*content_loss + weight_style * style_loss
         else:
             L_total  = content_loss + weight_style * style_loss
+        
+        if weight_mask:
+            L_total += weight_mask * mask_loss
+
+        if weight_tv:
+            L_total += weight_tv * threading_loss
     
         # instantiate optimiser
         optimizer = tf.contrib.opt.ScipyOptimizerInterface(
@@ -239,29 +356,62 @@ def transfer_style(img_content,
         init_op = tf.initialize_all_variables()
         sess.run(init_op)
         sess.run(net['input'].assign(img_initial))
-        for i in range(1,n_checkpoints+1):
-            # run optimisation
-            optimizer.minimize(sess)
+
+        if logging:
+            print("Starting...")
+
+        for i in range(1, n_checkpoints+1):
+
+            if logging:
+                print("Iter: {} of {}".format(i, n_checkpoints))
+
+            #Run optimisation
+            for j in range(n_iterations_checkpoint):
+                if logging:
+                    print("Sub-iter: {} of {}".format(j+1, n_iterations_checkpoint))
+                optimizer.minimize(sess)
         
-            ## print costs
-            stderr.write('Iteration %d/%d\n' % (i*n_iterations_checkpoint, n_checkpoints*n_iterations_checkpoint))
-            stderr.write('  content loss: %g\n' % sess.run(content_loss))
-            stderr.write('    style loss: %g\n' % sess.run(weight_style * style_loss))
-            if weight_mask:
-                stderr.write('    style loss: %g\n' % sess.run(weight_mask * mask_loss))
-            stderr.write('    total loss: %g\n' % sess.run(L_total))
+            if logging:
+                #Print costs
+                stderr.write('Content loss: %g\n' % sess.run(weight_content*content_loss if weight_content else content_loss))
+                stderr.write('Style loss: %g\n' % sess.run(weight_style * style_loss))
+                if weight_mask:
+                    stderr.write('Style loss: %g\n' % sess.run(weight_mask * mask_loss))
+                stderr.write('Total loss: %g\n' % sess.run(L_total))
 
-            ## write image
-            img_output = sess.run(net['input'])
-            img_output = imgunprocess(img_output)
+                #Write image
+                img_output = sess.run(net['input'])
+                img_output = imgunprocess(img_output)
 
-            timestr = time.strftime("%Y%m%d_%H%M%S")
-            output_file = path_output+'/'+timestr+'_'+'%s.jpg' % (i*n_iterations_checkpoint)
+                output_file = path_output+'/'+'step'+'_'+'%s.jpg' % (i*n_iterations_checkpoint)
 
-    imsave(output_file, img_output)
+                if greyscale:
+                    imsave(output_file, np.mean(img_output, 2).reshape(shape).clip(0, 255).astype(np.float32))
+                else:
+                    imsave(output_file, img_output.reshape(shape).clip(0, 255).astype(np.float32))
 
-    return img_output
+            elif i == n_checkpoints:
+                img_output = sess.run(net['input'])
+                img_output = imgunprocess(img_output)
+
+    if greyscale:
+        return (np.mean(img_output, 2).reshape(shape).clip(0, 255)/255.).astype(np.float32)
+    else:
+        return img_output.reshape(shape).clip(0, 255).astype(np.float32)
 
 if __name__ == "__main__":
-    restyled_img = transfer_style(np.random.rand(3, 4),
-                                  np.random.rand(3, 4))
+
+    img1_loc = r'X:\Jeffrey-Ede\models\neural-networks\style-transfer\some_images\electron-microscopy\tem_img2.tif'
+    img2_loc = r'X:\Jeffrey-Ede\models\neural-networks\style-transfer\some_images\random\roadside_sketch.tif'
+
+    img1 = scale0to1(imread(img1_loc))
+    img2 = scale0to1(imread(img2_loc))
+
+    restyled_img = transfer_style(img1,
+                                  img2,
+                                  shape=(400,400),
+                                  n_checkpoints=10,
+                                  n_iterations_checkpoint=25,
+                                  path_output=r'X:\Jeffrey-Ede\logging',
+                                  logging=True)
+    imsave(r'X:\Jeffrey-Ede\restyled_img.tif', restyled_img)
