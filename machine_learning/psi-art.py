@@ -226,27 +226,44 @@ def save_returned_tensor(img, loc, size):
     Image.fromarray(img.reshape(size[0], size[1]).astype(np.float32)).save( loc )
     return 
 
-def get_affine_trans(init=None):
+def get_affine_transform(init=None, scope=None):
 
-    if init:
-        pass
-    else:
-        init = init[:,:2]
+    with tf.variable_scope(variable_scope, reuse=False):
+        if init:
+            init = init[:,:2]
+        else:
+            init = [[1., 0.], [0., 1.], [0., 0.]]
 
-    tril_var = tf.variable(init, tf.float32)
-    tril_const = tf.constant([[0.], [0.], [1.]], tf.float32)
-    tril = tf.concat([tril_var, tril_const], axis=1)
+        tril_var = tf.variable(init, tf.float32)
+        tril_const = tf.constant([[0.], [0.], [1.]], tf.float32)
+        tril = tf.concat([tril_var, tril_const], axis=1)
 
-    scale = tf.linalg.LinearOperatorLowerTriangular(tril)
-    affine = AffineLinearOperator(shift, scale)
+        scale = tf.linalg.LinearOperatorLowerTriangular(tril)
+        affine = tf.contrib.distributions.bijectors.AffineLinearOperator(shift, scale)
 
-    return affine
+        return affine
 
 def experiment(stack, symbols, symbol_ests, middle_focus_img, 
-               size_lims, cropsize, energy=200, focal_spread_est=None, boot_size0=3):
+               size_lims, cropsize, energy=200, focal_spread_est=None, 
+               boot_size0=3, central_fraction=0.6):
 
     stack_means = [tf.convert_to_tensor(np.mean(img), dtype=tf.float32) for img in stack]
     root_stack = [tf.convert_to_tensor(np.sqrt(img), dtype=tf.float32) for img in stack]
+
+    for i in range(middle_focus_img-1):
+        affine = get_affine_transform(scope="affine"+str(i))
+        img = affine.forward(root_stack[i])
+        img = tf.image.central_crop(image, central_fraction)
+        root_stack[i] = img
+
+    root_stack[middle_focus_img-1] = tf.image.central_crop(root_stack[middle_focus_img-1], 
+                                                           central_fraction)
+
+    for i in range(middle_focus_img, num):
+        affine = get_affine_transform(scope="affine"+str(i))
+        img = affine.forward(root_stack[i])
+        img = tf.image.central_crop(image, central_fraction)
+        root_stack[i] = img
 
     if not focal_spread:
         focal_spread = tf.constant(0., [1])
@@ -281,25 +298,19 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
         backpropagation = tf.ifft2d(tf.fft2d(wavefunction)*ctf)
         backpropagations.append(stack_means[i]*backpropagation/tf.reduce_mean(backpropagation))
 
-    #Calculate losses
-    mse_losses = []
-    for i in range(num_imgs):
-        mse_losses.append(
-            tf.reduce_mean(
-                tf.losses.mean_squared_error(root_stack[i], backpropagations[i])))
-
     #See https://github.com/jcjohnson/neural-style/wiki/Fine-Tuning-The-Adam-Optimizer
     #about the choice of ADAM parameters
     learning_rate_ph = tf.placeholder(tf.float32, name="learning_rate")
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate_ph, 
                                       beta1=0.99, 
                                       epsilon=0.1)
-    train_op = optimizer.minimize(loss=mse, 
-                                  global_step=tf.train.get_global_step())
 
-    #Create affine transform
-    affine = get_affine_trans()
-    transformed_img = affine.forward(img)
+    #Calculate losses
+    mse_losses = []
+    for i in range(num_imgs):
+        mse_losses.append(
+            tf.reduce_mean(
+                tf.losses.mean_squared_error(root_stack[i], backpropagations[i])))
 
     #saver = tf.train.Saver()
     #saver.restore(sess, tf.train.latest_checkpoint("//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/denoiser-multi-gpu-13/model/"))
@@ -319,9 +330,11 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
 
             learning_rate = 0.001
             counter = 0
+            lb = ub = middle_focus_img-1
             for boot_size in range(boot_size0, num_imgs):
 
                 #Only use a portion of the stack to calculate distillation losses
+
                 lb = middle_focus_img - boot_size//2 - boot_size%2
                 ub = middle_focus_img + boot_size//2
 
@@ -332,7 +345,11 @@ def experiment(stack, symbols, symbol_ests, middle_focus_img,
                     lb -= ub - (num_imgs-1)
                     ub = num_imgs-1
 
-                mse = tf.add_n(mse_losses[lb:ub]) / boot_size
+                mse = tf.add_n(mse_losses[lb:ub]) / (boot_size+1)
+
+                train_op = optimizer.minimize(loss=mse, 
+                                              var_list=var_to_train,
+                                              global_step=tf.train.get_global_step())
 
                 #Use prior aberration coefficients to align the next image
                 mode == ALIGN
@@ -493,5 +510,6 @@ if __name__ == '__main__':
         dir += '\\'
 
     main(dir)
+
 
 
