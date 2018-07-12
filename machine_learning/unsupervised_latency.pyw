@@ -3,7 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse
 
@@ -38,19 +38,6 @@ slim = tf.contrib.slim
 
 tf.logging.set_verbosity(tf.logging.DEBUG)
 
-gen_features0 = 32
-gen_features1 = 64
-gen_features2 = 64
-gen_features3 = 32
-
-nin_features1 = 128
-nin_features2 = 256
-nin_features3 = 768
-
-nin_features_out1 = 256
-nin_features_out2 = 128
-nin_features_out3 = 64
-
 features1 = 16
 features2 = 32
 features3 = 64
@@ -58,15 +45,32 @@ features4 = 128
 features5 = 256
 features6 = 768
 
+gen_features1 = 32 #256
+gen_features2 = 64 #128
+gen_features3 = 128 #64
+gen_features4 = 256 #32
+gen_features5 = 512 #32
+gen_features6 = 768 #16
+gen_features7 = 1024 #8
+gen_features8 = 1536 #8
+gen_features9 = 2048 #8
+
+dec_features1 = 512 #8
+dec_features2 = 384 #16
+dec_features3 = 256 #32
+dec_features4 = 128 #64
+dec_features5 = 64 #128
+dec_features6 = 32 #256
+
 num_global_enhancer_blocks = 8
 num_local_enhancer_blocks = 5
 
-data_dir = "E:/ARM_scans-crops/"
+data_dir = "X:/Jeffrey-Ede/stills_all/"
 #data_dir = "E:/stills_hq-mini/"
 
-modelSavePeriod = 2 #Train timestep in hours
+modelSavePeriod = 4 #Train timestep in hours
 modelSavePeriod *= 3600 #Convert to s
-model_dir = "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/gan-infilling-2/"
+model_dir = "X:/Jeffrey-Ede/models/gan-unsupervised-latent-3/"
 
 shuffle_buffer_size = 5000
 num_parallel_calls = 8
@@ -103,15 +107,13 @@ lossSmoothingBoxcarSize = 5
 channels = 1 #Greyscale input image
 
 #Sidelength of images to feed the neural network
-cropsize = 512
+cropsize = 256
 generator_input_size = cropsize
 height_crop = width_crop = cropsize
 
 #hparams = experiment_hparams(train_batch_size=batch_size, eval_batch_size=16)
 
 weight_decay = 0.0
-batch_decay_gen = 0.999
-batch_decay_discr = 0.999
 initial_learning_rate = 0.001
 initial_discriminator_learning_rate = 0.001
 num_workers = 1
@@ -124,9 +126,84 @@ save_result_every_n_batches = 25000
 val_skip_n = 10
 trainee_switch_skip_n = 1
 
-max_num_since_training_change = 0
+max_num_since_change = 0
 
 flip_weight = 42
+
+def _tf_fspecial_gauss(size, sigma):
+    """Function to mimic the 'fspecial' gaussian MATLAB function
+    """
+    x_data, y_data = np.mgrid[-size//2 + 1:size//2 + 1, -size//2 + 1:size//2 + 1]
+
+    x_data = np.expand_dims(x_data, axis=-1)
+    x_data = np.expand_dims(x_data, axis=-1)
+
+    y_data = np.expand_dims(y_data, axis=-1)
+    y_data = np.expand_dims(y_data, axis=-1)
+
+    x = tf.constant(x_data, dtype=tf.float32)
+    y = tf.constant(y_data, dtype=tf.float32)
+
+    g = tf.exp(-((x**2 + y**2)/(2.0*sigma**2)))
+    return g / tf.reduce_sum(g)
+
+
+def tf_ssim(img1, img2, cs_map=False, mean_metric=True, size=11, sigma=1.5):
+    window = _tf_fspecial_gauss(size, sigma) # window shape [size, size]
+    K1 = 0.01
+    K2 = 0.03
+    L = 1  # depth of image (255 in case the image has a differnt scale)
+    C1 = (K1*L)**2
+    C2 = (K2*L)**2
+    mu1 = tf.nn.conv2d(img1, window, strides=[1,1,1,1], padding='VALID')
+    mu2 = tf.nn.conv2d(img2, window, strides=[1,1,1,1], padding='VALID')
+    mu1_sq = mu1*mu1
+    mu2_sq = mu2*mu2
+    mu1_mu2 = mu1*mu2
+    sigma1_sq = tf.nn.conv2d(img1*img1, window, strides=[1,1,1,1],padding='VALID') - mu1_sq
+    sigma2_sq = tf.nn.conv2d(img2*img2, window, strides=[1,1,1,1],padding='VALID') - mu2_sq
+    sigma12 = tf.nn.conv2d(img1*img2, window, strides=[1,1,1,1],padding='VALID') - mu1_mu2
+    if cs_map:
+        value = (((2*mu1_mu2 + C1)*(2*sigma12 + C2))/((mu1_sq + mu2_sq + C1)*
+                    (sigma1_sq + sigma2_sq + C2)),
+                (2.0*sigma12 + C2)/(sigma1_sq + sigma2_sq + C2))
+    else:
+        value = ((2*mu1_mu2 + C1)*(2*sigma12 + C2))/((mu1_sq + mu2_sq + C1)*
+                    (sigma1_sq + sigma2_sq + C2))
+
+    if mean_metric:
+        value = tf.reduce_mean(value)
+    return value
+
+
+def tf_ms_ssim(img1, img2, mean_metric=True, level=5):
+    weight = tf.constant([0.0448, 0.2856, 0.3001, 0.2363, 0.1333], dtype=tf.float32)
+    mssim = []
+    mcs = []
+    for l in range(level):
+        ssim_map, cs_map = tf_ssim(img1, img2, cs_map=True, mean_metric=False)
+        mssim.append(tf.reduce_mean(ssim_map))
+        mcs.append(tf.reduce_mean(cs_map))
+        filtered_im1 = tf.nn.avg_pool(img1, [1,2,2,1], [1,2,2,1], padding='SAME')
+        filtered_im2 = tf.nn.avg_pool(img2, [1,2,2,1], [1,2,2,1], padding='SAME')
+        img1 = filtered_im1
+        img2 = filtered_im2
+
+    # list to tensor of dim D+1
+    mssim = tf.pack(mssim, axis=0)
+    mcs = tf.pack(mcs, axis=0)
+
+    value = (tf.reduce_prod(mcs[0:level-1]**weight[0:level-1])*
+                            (mssim[level-1]**weight[level-1]))
+
+    if mean_metric:
+        value = tf.reduce_mean(value)
+    return value
+
+def tf_median(v):
+    v = tf.reshape(v, [-1])
+    m = v.get_shape()[0]//2
+    return tf.nn.top_k(v, m).values[m-1]
 
 def generator_architecture(inputs, phase=False, params=None):
     """Generates fake data to try and fool the discrimator"""
@@ -162,9 +239,9 @@ def generator_architecture(inputs, phase=False, params=None):
         def _batch_norm_fn(input):
             batch_norm = tf.contrib.layers.batch_norm(
                 input,
-                decay=batch_decay_gen,
+                decay=0.9997,
                 center=True, scale=True,
-                is_training=phase,
+                is_training=True,
                 fused=True,
                 zero_debias_moving_mean=False,
                 renorm=False)
@@ -172,11 +249,10 @@ def generator_architecture(inputs, phase=False, params=None):
 
         def batch_then_activ(input):
             batch_then_activ = _batch_norm_fn(input)
-            batch_then_activ = tf.nn.leaky_relu(batch_then_activ)
+            batch_then_activ = tf.nn.relu(batch_then_activ)
             return batch_then_activ
 
-        def conv_block_not_sep(input, filters, kernel_size=3, phase=phase, pad_size=None,
-                               batch_plus_activ=True):
+        def conv_block_not_sep(input, filters, kernel_size=3, phase=phase, pad_size=None, batch_and_activ=True):
 
             if pad_size:
                 input = pad(input, pad_size)
@@ -188,7 +264,7 @@ def generator_architecture(inputs, phase=False, params=None):
                 activation_fn=None,
                 padding='SAME' if not pad_size else 'VALID')
 
-            if batch_plus_activ:
+            if batch_and_activ:
                 conv_block = batch_then_activ(conv_block)
 
             return conv_block
@@ -204,8 +280,7 @@ def generator_architecture(inputs, phase=False, params=None):
             return conv_block
 
         def strided_conv_block(input, filters, stride, rate=1, phase=phase, 
-                               extra_batch_norm=True, kernel_size=3, pad_size=None,
-                               batch_plus_activ=True):
+                               extra_batch_norm=True, kernel_size=3, pad_size=None):
             if pad_size:
                 strided_conv = pad(input, pad_size)
             else:
@@ -232,9 +307,7 @@ def generator_architecture(inputs, phase=False, params=None):
                 outputs_collections=None,
                 trainable=True,
                 scope=None)
-
-            if batch_plus_activ:
-                strided_conv = batch_then_activ(strided_conv)
+            strided_conv = batch_then_activ(strided_conv)
 
             return strided_conv
 
@@ -318,54 +391,100 @@ def generator_architecture(inputs, phase=False, params=None):
 
             return cnn
 
-        def network_in_network(input):
-
-            nin = strided_conv_block(input, nin_features1, 2, 1, pad_size=(1,1))
-            nin = strided_conv_block(nin, nin_features2, 2, 1, pad_size=(1,1))
-            nin = strided_conv_block(nin, nin_features3, 2, 1, pad_size=(1,1))
-
-            for _ in range(num_global_enhancer_blocks):
-                nin = xception_middle_block(nin, nin_features3, pad_size=(1,1))
-
-            nin = deconv_block(nin, nin_features_out1, new_size=(64, 64), pad_size=(1,1))
-            nin = deconv_block(nin, nin_features_out2, new_size=(128, 128), pad_size=(1,1))
-            nin = deconv_block(nin, nin_features_out3, new_size=(256, 256), pad_size=(1,1))
-
-            return nin
-
         ##Model building
-        input_layer = tf.reshape(inputs, 
-                                 [-1, generator_input_size, generator_input_size, channels])
+        input_layer = tf.reshape(inputs, [-1, generator_input_size, generator_input_size, channels])
 
+        #256
         enc = strided_conv_block(input=input_layer,
-                                 filters=gen_features0,
-                                 stride=1,
-                                 kernel_size=7,
-                                 pad_size=(3,3))
-        enc = strided_conv_block(enc, gen_features1, 2, 1, pad_size=(1,1))
+                                 filters=gen_features1,
+                                 stride=2,
+                                 kernel_size=3)
 
-        enc += network_in_network(enc)
+        #128
+        enc = strided_conv_block(enc, gen_features3, 1, 1)
+        enc = strided_conv_block(input=input_layer,
+                                 filters=gen_features2,
+                                 stride=2,
+                                 kernel_size=3)
 
-        for _ in range(num_local_enhancer_blocks):
-            enc = xception_middle_block(enc, gen_features2, pad_size=(1,1))
+        #64
+        enc = strided_conv_block(enc, gen_features3, 1, 1)
+        enc = strided_conv_block(input=input_layer,
+                                 filters=gen_features3,
+                                 stride=2,
+                                 kernel_size=3)
 
-        enc = deconv_block(enc, gen_features3, new_size=(512, 512), pad_size=(1,1))
-        enc = strided_conv_block(enc, gen_features3, 1, 1, pad_size=(1,1))
+        #32
+        enc = strided_conv_block(enc, gen_features4, 1, 1)
+        enc = strided_conv_block(input=input_layer,
+                                 filters=gen_features4,
+                                 stride=2,
+                                 kernel_size=3)
 
-        #enc = conv_block_not_sep(enc, 1, pad_size=(1,1), batch_plus_activ=False)
+        #16
+        enc = xception_encoding_block_diff(enc, gen_features5, gen_features6)
 
-        enc = pad(enc, (1,1))
-        enc = slim.conv2d(
-                inputs=enc,
+        #8
+        enc = strided_conv_block(enc, gen_features7, 1, 1)
+        enc = strided_conv_block(enc, gen_features8, 1, 1)
+        enc = strided_conv_block(enc, gen_features9, 1, 1)
+
+        global_avg = tf.reduce_mean(enc, [1,2])
+
+        fc = tf.reshape(global_avg, (-1, gen_features9))
+        fc = tf.contrib.layers.fully_connected(inputs=fc,
+                                               num_outputs=gen_features9,
+                                               activation_fn=None,
+                                               trainable=phase)
+        fc = batch_then_activ(fc)
+
+        fc = tf.contrib.layers.dropout(fc, keep_prob=0.75, is_training=phase)
+
+        ### End of encoding. Start of decoding ###
+        
+        fc = tf.contrib.layers.fully_connected(inputs=fc,
+                                               num_outputs=gen_features9,
+                                               activation_fn=None,
+                                               trainable=phase)
+        fc = batch_then_activ(fc)
+        
+        dec = tf.reshape(fc, [-1, 4, 4, gen_features9//(4*4)])
+
+        #4
+        dec = deconv_block(dec, dec_features1, (8, 8), pad_size=(1,1))
+
+        #8
+        dec = deconv_block(dec, dec_features2, (16, 16), pad_size=(1,1))
+
+        #16
+        dec = deconv_block(dec, dec_features3, (32, 32), pad_size=(1,1))
+        dec = conv_block(dec, dec_features3, pad_size=(1,1))
+
+        #32
+        dec = deconv_block(dec, dec_features4, (64, 64), pad_size=(1,1))
+        dec = conv_block(dec, dec_features4, pad_size=(1,1))
+
+        #64
+        dec = deconv_block(dec, dec_features5, (128, 128), pad_size=(1,1))
+        for _ in range(5):
+            dec = xception_middle_block(dec, dec_features5, pad_size=(1,1))
+
+        #128
+        dec = deconv_block(dec, dec_features6, (256, 256), pad_size=(1,1))
+        dec = conv_block(dec, dec_features6, pad_size=(1,1))
+
+        dec = pad(dec, (1,1))
+        dec = slim.conv2d(
+                inputs=dec,
                 num_outputs=1,
                 kernel_size=3,
                 padding="VALID",
                 activation_fn=None)
-        enc = _instance_norm(enc)
+        dec = _instance_norm(dec)
 
-        enc = tf.tanh(enc)
+        dec = tf.tanh(dec)
 
-        return enc
+        return dec
 
 def discriminator_architecture(inputs, phase=False, params=None, gen_loss=0., reuse=False):
     """Discriminates between real and fake data"""
@@ -381,7 +500,7 @@ def discriminator_architecture(inputs, phase=False, params=None, gen_loss=0., re
             mu, sigma_sq = tf.nn.moments(net, [1,2], keep_dims=True)
             shift = tf.Variable(tf.zeros(var_shape), trainable=False)
             scale = tf.Variable(tf.ones(var_shape), trainable=False)
-            epsilon = 1.e-3
+            epsilon = 1e-3
             normalized = (net-mu)/(sigma_sq + epsilon)**(.5)
             return scale * normalized + shift
 
@@ -394,9 +513,9 @@ def discriminator_architecture(inputs, phase=False, params=None, gen_loss=0., re
         def _batch_norm_fn(input):
             batch_norm = tf.contrib.layers.batch_norm(
                 input,
-                decay=batch_decay_discr,
+                decay=0.9997,
                 center=True, scale=True,
-                is_training=phase,
+                is_training=True,
                 fused=True,
                 zero_debias_moving_mean=False,
                 renorm=False)
@@ -407,7 +526,7 @@ def discriminator_architecture(inputs, phase=False, params=None, gen_loss=0., re
             batch_then_activ = tf.nn.leaky_relu(batch_then_activ)
             return batch_then_activ
 
-        def conv_block_not_sep(input, filters, kernel_size=3, phase=phase, batch_and_activ=True):
+        def conv_block_not_sep(input, filters, kernel_size=3, phase=phase):
             """
             Convolution -> batch normalisation -> leaky relu
             phase defaults to true, meaning that the network is being trained
@@ -419,9 +538,7 @@ def discriminator_architecture(inputs, phase=False, params=None, gen_loss=0., re
                 kernel_size=kernel_size,
                 padding="SAME",
                 activation_fn=None)
-
-            if batch_and_activ:
-                conv_block = batch_then_activ(conv_block)
+            conv_block = batch_then_activ(conv_block)
 
             return conv_block
 
@@ -734,7 +851,7 @@ def local_device_setter(num_devices=1,
 def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
     """Returns a function that will build the model."""
     if component == "generator":
-        def _model_fn(features, ground_truths, mode=None, params=None):
+        def _model_fn(features, mode=None, params=None):
             """Model body.
 
             Support single host, one or more GPU training. Parameter distribution can
@@ -754,7 +871,6 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
             momentum = params.momentum
 
             tower_features = features
-            tower_truths = ground_truths
             tower_grads = []
             tower_preds = []
             discr_preds = []
@@ -791,7 +907,7 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
                     with tf.name_scope('tower_%d' % i) as name_scope:
                         with tf.device(device_setter):
                             grads, preds, preds_d = _generator_tower_fn(
-                                is_training, tower_features[i], tower_truths[i])
+                                is_training, tower_features[i])
 
                             tower_grads.append(grads)
                             tower_preds.append(preds)
@@ -889,6 +1005,7 @@ def get_model_fn(num_gpus, variable_strategy, num_workers, component=""):
     return _model_fn
 
 def get_multiscale_crops(input, multiscale_channels=1):
+
     small = tf.random_crop(
                 input,
                 size=(batch_size, cropsize//4, cropsize//4, multiscale_channels))
@@ -902,9 +1019,8 @@ def get_multiscale_crops(input, multiscale_channels=1):
 
     return small, medium, large
 
-def _generator_tower_fn(is_training, feature, ground_truth):
-    """
-    Build computation tower.
+def _generator_tower_fn(is_training, feature):
+    """Build computation tower.
         Args:
         is_training: true if is training graph.
         feature: a Tensor.
@@ -915,14 +1031,10 @@ def _generator_tower_fn(is_training, feature, ground_truth):
 
     #phase = tf.estimator.ModeKeys.TRAIN if is_training else tf.estimator.ModeKeys.EVAL
     feature = tf.reshape(feature, [-1, cropsize, cropsize, channels])
-    truth = tf.reshape(ground_truth, [-1, cropsize, cropsize, channels])
-
     output = generator_architecture(feature, is_training)
+    model_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="nn/GAN/Gen")
 
-    model_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 
-                                     scope="nn/GAN/Gen")
-
-    concat = tf.concat([output, truth], axis=3)
+    concat = tf.concat([output, feature], axis=3)
     shapes = [(batch_size, cropsize//4, cropsize//4, channels),
               (batch_size, cropsize//2, cropsize//2, channels),
               (batch_size, cropsize//4, cropsize//4, channels)]
@@ -937,9 +1049,7 @@ def _generator_tower_fn(is_training, feature, ground_truth):
     output_d = discrimination[0]
 
     #Compare discrimination features for generation against those for a real image
-    discrimination_natural = discriminator_architecture(multiscale_natural, 
-                                                        is_training, 
-                                                        reuse=True)
+    discrimination_natural = discriminator_architecture(multiscale_natural, is_training, reuse=True)
 
     natural_stat_losses = []
     for i in range(1, len(discrimination)):
@@ -951,7 +1061,7 @@ def _generator_tower_fn(is_training, feature, ground_truth):
 
     weight_natural_stats = 7.
 
-    loss = -tf.log(output_d+1.e-8)
+    loss = -tf.log(tf.maximum(output_d, 1e-9))
     loss += weight_natural_stats*natural_stat_loss
     loss += 1.e-5 * tf.add_n(
         [tf.nn.l2_loss(v) for v in model_params])
@@ -984,8 +1094,8 @@ def _discriminator_tower_fn(is_training, feature, ground_truth):
     model_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="nn/GAN/Discr")
 
     tower_loss = -tf.cond(ground_truth[0] > 0.5, #Only works for batch size 1
-                          lambda: tf.log(output+1.e-8), 
-                          lambda: tf.log(1.-output+1.e-8))
+                          lambda: tf.log(tf.maximum(output, 1e-9)), 
+                          lambda: tf.log(tf.maximum(1.-output, 1e-9)))
     tower_loss += 5.e-5 * tf.add_n([tf.nn.l2_loss(v) for v in model_params])
 
     tower_grad = tf.gradients(tower_loss, model_params)
@@ -996,7 +1106,7 @@ def _discriminator_tower_fn(is_training, feature, ground_truth):
 def flip_rotate(img):
     """Applies a random flip || rotation to the image, possibly leaving it unchanged"""
 
-    choice = np.random.randint(0, 8)
+    choice = int(8*np.random.rand())
     
     if choice == 0:
         return img
@@ -1016,23 +1126,19 @@ def flip_rotate(img):
         return np.flip(np.rot90(img, 1), 1)
 
 
-def load_image(addr, resizeSize=None, img_type=np.float32):
+def load_image(addr, resizeSize=None, imgType=np.float32):
     """Read an image and make sure it is of the correct type. Optionally resize it"""
     
     try:
         img = imread(addr, mode='F')
     except:
-        img = np.zeros((512,512))
+        img = 0.5*np.ones((512,512))
         print("Image read failed")
-
-    if img.shape != (512, 512):
-        img = np.zeros((512,512))
-        print("Image had wrong shape")
 
     if resizeSize:
         img = cv2.resize(img, resizeSize, interpolation=cv2.INTER_AREA)
 
-    return img.astype(img_type)
+    return img.astype(imgType)
 
 
 def scale0to1(img):
@@ -1041,7 +1147,7 @@ def scale0to1(img):
     min = np.min(img)
     max = np.max(img)
 
-    if np.absolute(min-max) < 1.e-6:
+    if min == max:
         img.fill(0.5)
     else:
         img = (img-min) / (max-min)
@@ -1053,7 +1159,7 @@ def norm_img(img):
     min = np.min(img)
     max = np.max(img)
 
-    if np.absolute(min-max) < 1.e-6:
+    if min == max:
         img.fill(0.)
     else:
         a = 0.5*(min+max)
@@ -1068,34 +1174,20 @@ def preprocess(img):
     img[np.isnan(img)] = 0.
     img[np.isinf(img)] = 0.
 
-    img = norm_img(img)
+    img = cv2.resize(img, (cropsize, cropsize))
 
-    #img = cv2.resize(img, (cropsize, cropsize))
+    img = norm_img(img)
 
     return img
 
-def gen_lq(img):
-
-    frac = 0.05 #np.random.uniform(0.01, 0.05)
-    select = np.random.random(img.shape) < frac
-
-    lq = -np.ones(img.shape)
-    lq[select] = img[select]
-
-    return lq.astype(np.float32)
-
 def record_parser(record):
     """Parse files and generate lower quality images from them"""
+    return preprocess(flip_rotate(load_image(record)))
 
-    img = flip_rotate(preprocess(load_image(record)))
-    lq = gen_lq(img)
+def reshaper(img):
+    img = tf.reshape(img, [cropsize, cropsize, channels])
+    return img
 
-    return lq, img
-
-def reshaper(img1, img2):
-    img1 = tf.reshape(img1, [cropsize, cropsize, channels])
-    img2 = tf.reshape(img2, [cropsize, cropsize, channels])
-    return img1, img2
 
 def input_fn(dir, subset, batch_size, num_shards):
     """Create a dataset from a list of filenames and shard batches from it"""
@@ -1106,33 +1198,25 @@ def input_fn(dir, subset, batch_size, num_shards):
         dataset = dataset.shuffle(buffer_size=shuffle_buffer_size)
         dataset = dataset.repeat(num_epochs)
         dataset = dataset.map(
-            lambda file: tf.py_func(record_parser, [file], [tf.float32, tf.float32]),
+            lambda file: tf.py_func(record_parser, [file], [tf.float32]),
             num_parallel_calls=num_parallel_calls)
-        #print(dataset.output_shapes, dataset.output_types)
         dataset = dataset.map(reshaper, num_parallel_calls=num_parallel_calls)
-        #print(dataset.output_shapes, dataset.output_types)
         dataset = dataset.batch(batch_size=batch_size)
         dataset = dataset.prefetch(buffer_size=prefetch_buffer_size)
 
         iter = dataset.make_one_shot_iterator()
         img_batch = iter.get_next()
 
-        if num_shards <= 1:
-            # No GPU available or only 1 GPU.
-            return [img_batch[0]], [img_batch[1]]
-        else:
-            image_batch = tf.unstack(img_batch, num=batch_size, axis=1)
-            feature_shards = [[] for i in range(num_shards)]
-            feature_shards_truth = [[] for i in range(num_shards)]
-            for i in range(batch_size):
-                idx = i % num_shards
-                tensors = tf.unstack(image_batch[i], num=2, axis=0)
-                feature_shards[idx].append(tensors[0])
-                feature_shards_truth[idx].append(tensors[1])
-            feature_shards = [tf.parallel_stack(x) for x in feature_shards]
-            feature_shards_truth = [tf.parallel_stack(x) for x in feature_shards_truth]
+        return [img_batch]
 
-            return feature_shards, feature_shards_truth
+        #tensors = tf.unstack(image_batch, num=batch_size, axis=0)
+        #feature_shards = [[] for i in range(num_shards)]
+        #for i in range(batch_size):
+        #    idx = i % num_shards
+        #    feature_shards[idx].append(tensors[i])
+        #feature_shards = [tf.parallel_stack(x) for x in feature_shards]
+
+        #return feature_shards
 
 def disp(img):
     cv2.namedWindow('CV_Window', cv2.WINDOW_NORMAL)
@@ -1347,7 +1431,6 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
     with open(discr_pred_file, 'a') as discr_pred_log:
         discr_pred_log.flush()
-
         with open(log_file, 'a') as log:
             log.flush()
 
@@ -1376,8 +1459,8 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                         is_chief=config.is_chief,
                         **hparams)
 
-                    img, img_truth = input_fn(data_dir, 'train', batch_size, num_gpus)
-                    img_val, img_truth_val = input_fn(data_dir, 'val', batch_size, num_gpus)
+                    img = input_fn(data_dir, 'train', batch_size, num_gpus)
+                    img_val = input_fn(data_dir, 'val', batch_size, num_gpus)
 
                     with tf.Session(config=sess_config) as sess: #Alternative is tf.train.MonitoredTrainingSession()
 
@@ -1387,11 +1470,11 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                         #sess.run( tf.global_variables_initializer())
                         temp = set(tf.all_variables())
 
-                        ____img, ____img_truth = sess.run([img, img_truth])
+                        ____img = sess.run(img)
                         img_ph = [tf.placeholder(tf.float32, shape=i.shape, name='img') 
                                   for i in ____img]
                         img_truth_ph = [tf.placeholder(tf.float32, shape=i.shape, name='img_truth') 
-                                        for i in ____img_truth]
+                                        for i in ____img]
 
                         is_training = True
                         generator_model_fn = get_model_fn(
@@ -1403,9 +1486,7 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                         #########################################################################################
 
-                        results = generator_model_fn(img_ph, 
-                                                     img_truth_ph,
-                                                     mode=is_training, 
+                        results = generator_model_fn(img_ph, mode=is_training, 
                                                      params=hparams)
                         _tower_preds = results[0]
                         _discr_preds = results[1]
@@ -1419,9 +1500,9 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                         mini_batch_dict = {}
                         for i in range(batch_size):
-                            _img, _img_truth = sess.run([img[i], img_truth[i]])
+                            _img = sess.run(img[i])
                             mini_batch_dict.update({img_ph[i]: _img})
-                            mini_batch_dict.update({img_truth_ph[i]: _img_truth})
+                            mini_batch_dict.update({img_truth_ph[i]: _img})
 
                         gradvars_pry, preds = sess.run([tower_grads, _tower_preds], 
                                                        feed_dict=mini_batch_dict)
@@ -1432,10 +1513,9 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                            for _ in range(effective_batch_size)]
                         del gradvars_pry
             
-                        train_op = _train_op(variable_strategy,
-                                             update_ops, 
-                                             learning_rate_ph,
-                                             _tower_grads=tower_grads_ph)
+                        train_op = _train_op(variable_strategy, update_ops, 
+                                                       learning_rate_ph,
+                                                       _tower_grads=tower_grads_ph)
 
                         print("Generator flow established")
 
@@ -1493,8 +1573,7 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                         #print(tf.all_variables())
                         saver = tf.train.Saver()
-                        #saver.restore(sess, tf.train.latest_checkpoint(
-                        #    "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/gan-infilling-2/model/"))
+                        #saver.restore(sess, tf.train.latest_checkpoint("X:/Jeffrey-Ede/models/gan-unsupervised-latent-3/model/"))
 
                         learning_rate = initial_learning_rate
                         discriminator_learning_rate = initial_discriminator_learning_rate
@@ -1502,12 +1581,12 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                         offset = 30
                         train_gen = False
                         avg_pred = 0. #To decide which to train
-                        avg_pred_real = 0. #To decide which to train
+                        avg_pred_real = 0.
                         num_since_change = 0.
-
+ 
                         counter = 0
-                        pred_avg = 0.5
-                        pred_avg_real = 0.5
+                        counter_init = counter+1
+                        pred_avg = pred_avg_real = 0.5
                         while True:
                             #Train for a couple of hours
                             time0 = time.time()
@@ -1517,8 +1596,8 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                     learning_rates = [float(line) for line in lrf]
                                     learning_rate = np.float32(learning_rates[0])
                                     discriminator_learning_rate = np.float32(learning_rate[1])
-                                    print("Using learning rates: {}, {}".format(learning_rate, 
-                                                                                discriminator_learning_rate))
+                                    print("Using learning rates: {}, {}".format(
+                                        learning_rate, discriminator_learning_rate))
                                 except:
                                     pass
 
@@ -1535,15 +1614,15 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                 for j in range(increase_batch_size_by_factor):
 
                                     mini_batch_dict = {}
-                                    __img, __img_truth = sess.run([img, img_truth])
-                                    tower_ground_truths_list += __img_truth
+                                    __img = sess.run(img)
+                                    tower_ground_truths_list += __img
 
                                     for i in range(batch_size):
                                         mini_batch_dict.update({img_ph[i]: __img[i]})
-                                        mini_batch_dict.update({img_truth_ph[i]: __img_truth[i]})
+                                        mini_batch_dict.update({img_truth_ph[i]: __img[i]})
 
                                         ph_dict.update({img_ph[i]: __img[i],
-                                                        img_truth_ph[i]: __img_truth[i]})
+                                                        img_truth_ph[i]: __img[i]})
 
                                         if train_gen:
                                             mini_batch_results = sess.run([_tower_preds] +
@@ -1566,13 +1645,11 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                 del mini_batch_dict
 
                                 #Save outputs occasionally
-                                if counter <= 1 or not counter % save_result_every_n_batches or (counter < 10000 and not counter % 1000):
+                                if counter <= 1 or not counter % save_result_every_n_batches or (counter < 10000 and not counter % 1000) or counter == counter_init:
                                     try:
                                         save_input_loc = model_dir+"input-"+str(counter)+".tif"
-                                        save_truth_loc = model_dir+"truth-"+str(counter)+".tif"
                                         save_output_loc = model_dir+"output-"+str(counter)+".tif"
                                         Image.fromarray(scale0to1(__img[0]).reshape(cropsize, cropsize).astype(np.float32)).save( save_input_loc )
-                                        Image.fromarray(scale0to1(__img_truth[0]).reshape(cropsize, cropsize).astype(np.float32)).save( save_truth_loc )
                                         Image.fromarray(scale0to1(tower_preds_list[0]).reshape(cropsize, cropsize).astype(np.float32)).save( save_output_loc )
                                     except:
                                         print("Image save failed")
@@ -1596,8 +1673,7 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                                         for i in range(batch_size):
                                             mini_batch_dict.update({pred_ph[i]: tower_preds_list[batch_size*j+i]})
-                                            prob = 1.-1./(1.+np.exp(-flip_weight*pred_avg))
-                                            label = 0. if np.random.rand() > prob else 0.85+0.15*np.random.rand()
+                                            label = 0. if np.random.rand() > 1.-1./(1.+np.exp(-flip_weight*pred_avg)) else 0.85+0.15*np.random.rand()
                                             mini_batch_dict.update({label_ph[i]: np.reshape(label, (1,))})
                                             discriminator_ph_dict.update({pred_ph[i]: tower_preds_list[batch_size*j+i]})
 
@@ -1625,8 +1701,7 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                         for i in range(batch_size):
                                             mini_batch_dict.update({pred_ph[i]: np.reshape(tower_ground_truths_list[batch_size*j+i],
                                                                                            (cropsize, cropsize, 1))})
-                                            prob = 1.-1./(1.+np.exp(-flip_weight*pred_avg_real))
-                                            label = 0.85+0.15*np.random.rand() if np.random.rand() > prob else 0.
+                                            label = 0.85+0.15*np.random.rand() if np.random.rand() > 1.-1./(1.+np.exp(-flip_weight*pred_avg_real)) else 0.
                                             mini_batch_dict.update({label_ph[i]: np.reshape(label, (1,))})
 
                                         mini_batch_results = sess.run([_discriminator_tower_losses, 
@@ -1689,10 +1764,10 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                     #Generate micrographs
                                     mini_batch_dict = {}
                                     for i in range(batch_size):
-                                        __img, __img_truth = sess.run([img_val[i], img_truth_val[i]])
-                                        tower_ground_truths_list.append(__img_truth)
+                                        __img = sess.run(img_val[i])
+                                        tower_ground_truths_list.append(__img)
                                         mini_batch_dict.update({img_ph[i]: __img})
-                                        mini_batch_dict.update({img_truth_ph[i]: __img_truth})
+                                        mini_batch_dict.update({img_truth_ph[i]: __img})
 
                                     mini_batch_results = sess.run([_tower_preds] +
                                                                    tower_grads, 
@@ -1750,25 +1825,26 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                           counter, gen_loss, discr_loss, gen_loss_val, discr_loss_val))
 
                                 if not counter % trainee_switch_skip_n:
-
                                     avg_pred /= trainee_switch_skip_n*effective_batch_size
 
-                                    pred_avg = 0.99*pred_avg + 0.01*avg_pred
+                                    print("Iter: {}, Training {}. Avg pred: {}".format(counter, "gen" if train_gen else "discr", avg_pred))
+
+                                    pred_avg = 0.9*pred_avg + 0.1*avg_pred
 
                                     real_flip_prob = 0.
                                     if avg_pred_real:
                                         avg_pred_real /= trainee_switch_skip_n*effective_batch_size
                                         avg_pred_real = 1. - avg_pred_real
-                                        pred_avg_real = 0.99*pred_avg_real + 0.01*avg_pred_real
+                                        pred_avg_real = 0.9*pred_avg_real + 0.1*avg_pred_real
                                         real_flip_prob = 1.-1./(1.+np.exp(-flip_weight*pred_avg_real))
 
-                                    print("Gen pred: {}, Discr Pred: {}".format(avg_pred, 1.-avg_pred_real))
-                                    print("Iter: {}, Training {}, G flip: {}, R flip:{}".format(
+                                    print("Gen pred: {}, Real Pred: {}".format(avg_pred, 1.-avg_pred_real))
+                                    print("Iter: {}, Training {}, G flip: {}, D flip:{}".format(
                                         counter, "gen" if train_gen else "discr", 
                                         1.-1./(1.+np.exp(-flip_weight*pred_avg)),
                                         real_flip_prob))
 
-                                    if num_since_change >= max_num_since_training_change:
+                                    if num_since_change >= max_num_since_change:
                                         num_since_change = 1
                                         train_gen = not train_gen
                                     else:
