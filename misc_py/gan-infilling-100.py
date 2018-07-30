@@ -63,9 +63,9 @@ num_local_enhancer_blocks = 3
 data_dir = "F:/ARM_scans-crops/"
 #data_dir = "E:/stills_hq-mini/"
 
-modelSavePeriod = 4 #Train timestep in hours
+modelSavePeriod = 2 #Train timestep in hours
 modelSavePeriod *= 3600 #Convert to s
-model_dir = "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/gan-infilling-100-3/"
+model_dir = "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/gan-infilling-64-3/"
 
 shuffle_buffer_size = 5000
 num_parallel_calls = 4
@@ -118,7 +118,7 @@ num_workers = 1
 increase_batch_size_by_factor = 1
 effective_batch_size = increase_batch_size_by_factor*batch_size
 
-save_result_every_n_batches = 20000
+save_result_every_n_batches = 50000
 
 val_skip_n = 10
 trainee_switch_skip_n = 1
@@ -1034,7 +1034,10 @@ def _generator_tower_fn(is_training, feature, ground_truth, train_batch_norm):
 
     loss = -tf.log(tf.clip_by_value(output_d, 1.e-8, 1.))
     loss += weight_natural_stats*natural_stat_loss
-    loss += 2.e-6 * tf.add_n(
+
+    decay = tf.cond(train_batch_norm, lambda: 2.e-6, lambda: 0.0)
+
+    loss += decay * tf.add_n(
         [tf.nn.l2_loss(v) for v in l2_params])
     
     tower_grad = tf.gradients(loss, model_params)
@@ -1167,7 +1170,7 @@ def preprocess(img):
 
     return img
 
-frac = 0.01 #np.random.uniform(0.01, 0.05)
+frac = 1./64 #np.random.uniform(0.01, 0.05)
 np.random.seed(1)
 select = np.random.random((cropsize, cropsize)) < frac
 
@@ -1598,8 +1601,8 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                         #print(tf.all_variables())
                         saver = tf.train.Saver()
-                        saver.restore(sess, tf.train.latest_checkpoint(
-                            "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/gan-infilling-100-3/model/"))
+                        #saver.restore(sess, tf.train.latest_checkpoint(
+                        #    "//flexo.ads.warwick.ac.uk/Shared41/Microscopy/Jeffrey-Ede/models/gan-infilling-64-3/model/"))
 
                         learning_rate = initial_learning_rate
                         discriminator_learning_rate = initial_discriminator_learning_rate
@@ -1610,7 +1613,8 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                         avg_pred_real = 0. #To decide which to train
                         num_since_change = 0.
 
-                        counter = 108140
+                        counter = 0
+                        save_counter = counter
                         counter_init = counter+1
                         pred_avg = 0.5
                         pred_avg_real = 0.5
@@ -1635,12 +1639,9 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
                                     saver.save(sess, save_path=model_dir+"model/", global_step=counter)
                                     quit()
                                 step =  (counter-350000) // 50000 + 1
-                                rate = 0.0002(1-step/8)
+                                rate = 0.0002*(1-step/8)
 
-                            train_batch_norm_on = counter < 50000
-
-                            if counter > 100000:
-                                rate /= 2
+                            train_batch_norm_on = counter < 250000
 
                             learning_rate = np.float32(rate)
                             discriminator_learning_rate = learning_rate / 2
@@ -1820,8 +1821,14 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                                 print("Iter: {}, Preds: {}".format(counter, discriminator_tower_preds_list[:effective_batch_size]))
                                 discr_pred_log.write("Iter: {}, ".format(counter))
-                                for p in discriminator_tower_preds_list:
+                                for i, p in enumerate(discriminator_tower_preds_list):
                                     discr_pred_log.write("{}, ".format(p))
+
+                                    if p == 0.5 and not i:
+                                        saver.restore(sess, tf.train.latest_checkpoint(
+                                            model_dir+"model/"))
+                                        counter = save_counter
+
                                 discr_pred_log.write("\n")
 
                                 if not counter % val_skip_n:
@@ -1939,6 +1946,7 @@ def main(job_dir, data_dir, variable_strategy, num_gpus, log_device_placement,
 
                             #Save the model
                             saver.save(sess, save_path=model_dir+"model/", global_step=counter)
+                            save_counter = counter
     return 
 
 if __name__ == '__main__':
