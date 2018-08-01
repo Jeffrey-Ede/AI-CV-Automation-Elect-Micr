@@ -78,7 +78,7 @@ lossSmoothingBoxcarSize = 5
 channels = 1 #Greyscale input image
 
 #Sidelength of images to feed the neural network
-cropsize = 128
+cropsize = 10#171
 generator_input_size = cropsize
 height_crop = width_crop = cropsize
 
@@ -107,126 +107,257 @@ def architectures(inputs):
     def make_layer(size, type):
         
         if type == 'biases':
-            init = 0.
+            init = np.array([0.], dtype=np.float32)
         if type == 'weights':
-            init = 1./(width*width)
-        
-        num_variables = 3
+            init = np.array([1./(size*size)], dtype=np.float32)
 
-        x = 3
-        while x < size:
-            x += 2
-            num_variables += x
+        #print("Init: {}".format(init))
 
-        #variables = []
-        #for i in range(num_variables):
-        #    with tf.variable_scope("var{}".format(i)) as scope:
-        #        variables.append(tf.Variable(initial_value=init))
+        printij = False #Set to true to debug
 
+        if printij:
+            print("\nStart:")
 
-        variables = [[None]*size]*size
+        variables = [[None for _ in range(size)] for _ in range(size)]
+
+        if printij:
+            for i in range(3):
+                for j in range(3):
+                    if variables[i][j]:
+                        print(i, j, variables[i][j].name)
+                    else:
+                        print(i,j)
+            print("\n")
+
         offset = size//2
         for x in range(size//2+1):
             for y in range(x+1):
-                
-                with tf.variable_scope("var_x-{}_y-{}".format(x, y)) as scope:
-                    var = tf.Variable(initial_value=init)
+
+                with tf.variable_scope("var_x-{}_y-{}".format(x, y), reuse=False) as scope:
 
                     i, j = offset+x, offset+y
-                    variables[i][j] = var
+                    variables[i][j] = tf.get_variable('v', dtype=tf.float32, initializer=init, trainable=True)
+                    if printij:
+                        print(i,j,x,y,variables[i][j].name)
+
+                        for i in range(3):
+                            for j in range(3):
+                                if variables[i][j]:
+                                    print(i, j, variables[i][j].name)
+                                else:
+                                    print(i,j)
+                        print("\n")
 
                     if x > 0:
                         if y == 0:
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset-x, offset
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-x, offset
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset, offset+x
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset, offset+x
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset, offset-x
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset, offset-x
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                        if y == x:
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                        elif y == x:
+                            i, j = offset+x, offset-y
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset+x, offset-y
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset-x, offset+y
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-x, offset+y
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset-x, offset-y
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-x, offset-y
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                        if y != x:
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                        elif y != x:
+                            i, j = offset-x, offset+y
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-x, offset+y
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset+x, offset-y
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset+x, offset-y
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset-x, offset-y
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-x, offset-y
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset+y, offset+x
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset+y, offset+x
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset-y, offset+x
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-y, offset+x
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset+y, offset-x
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset+y, offset-x
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
 
-                            with tf.variable_scope(scope, reuse=True):
-                                var = tf.Variable(initial_value=init)
+                            i, j = offset-y, offset-x
+                            scope.reuse_variables()
+                            variables[i][j] = tf.get_variable(name='v')
+                            if printij:
+                                print(i,j,x,y,variables[i][j].name)
 
-                                i, j = offset-y, offset-x
-                                variables[i][j] = var
+                                for i in range(3):
+                                    for j in range(3):
+                                        if variables[i][j]:
+                                            print(i, j, variables[i][j].name)
+                                        else:
+                                            print(i,j)
+                                print("\n")
+
+                #print(len(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="depth-1_size-3/var_x-{}_y-{}".format(x, y))))
+
+        #print(variables)
+
+        if printij:
+            for i in range(3):
+                for j in range(3):
+                    print(i, j, variables[i][j].name)
 
         concats = []
         for i in range(size):
-            concats.append(tf.stack(variables[:][i], axis=0))
+            concats.append(tf.concat(variables[:][i], axis=0))
         kernel = tf.stack(concats, axis=1)
-        
-        kernel = tf.reshape(kernel, [-1, size, size, 1])
+
+        kernel = tf.expand_dims(kernel, axis=0)
+        kernel = tf.expand_dims(kernel, axis=3)
+
+        #kernel = tf.reshape(kernel, [-1, size, size, 1])
+
+        #print(kernel)
 
         return kernel
 
-    depths = [1]
+    depths = [2]
     widths = [3]
     #depths = [i for i in range(1, 6)]
     #widths = [3, 5, 7, 9, 13, 17]
@@ -244,28 +375,28 @@ def architectures(inputs):
             default_scope = "depth-{}_size-{}".format(depth, width)
 
             #Filter creation
-            def filter_fn(input, scope=None):
-                reuse = scope != None
-                if not scope:
-                    scope = default_scope
-
-                with tf.variable_scope(scope, reuse) as filter_scope:
-                    filter = make_layer(width, 'weights')*input
+            def filter_fn(input):
+                    with tf.variable_scope('w0'):
+                        filter = make_layer(width, 'weights')*input
 
                     for i in range(1, depth):
-                        filter += make_layer(width, 'biases')
-                        fc = tf.reshape(filter, [-1, width*width])
-                        fc = tf.contrib.layers.fully_connected(
+                        with tf.variable_scope('b'+str(i)):
+                            filter += make_layer(width, 'biases')
+
+                        filter = tf.sigmoid(filter)
+                        filter = tf.contrib.layers.fully_connected(
                             inputs=filter, 
-                            num_outputs=width*width,
-                            activation=tf.nn.sigmoid)
-                        filter = tf.reshape(fc, [-1, width, width, 1])
+                            num_outputs=1,
+                            activation_fn=None,
+                            weights_initializer=None,
+                            biases_initializer=None)
                     
-                        filter = make_layer(width, 'weights')*filter
+                        with tf.variable_scope('w'+str(i)):
+                            filter = make_layer(width, 'weights')*filter
 
                     output = tf.reduce_sum(tf.reduce_sum(tf.reduce_sum(filter, axis=1), axis=1), axis=1)
 
-                return output, filter_scope
+                    return output
 
             filters.append(filter_fn)
             filter_scopes.append(default_scope)
@@ -275,20 +406,26 @@ def architectures(inputs):
             #Generate outputs
             padded = pad(inputs, (width//2, width//2))
 
-            output = [[None]*cropsize]*cropsize
-            scope = None
+            output = [[None for _ in range(cropsize)] for _ in range(cropsize)]
             for x in range(cropsize):
                 for y in range(cropsize):
-                    output[x][y], scope = filter_fn(padded[:, x:(x+width), y:(y+width), :], scope=scope)
+                    if not x+y:
+                        with tf.variable_scope(default_scope) as filter_scope:
+                            output[x][y] = filter_fn(padded[:, x:(x+width), y:(y+width), :])
+                    else:
+                        with tf.variable_scope(filter_scope, reuse=True) as filter_scope:
+                            output[x][y] = filter_fn(padded[:, x:(x+width), y:(y+width), :])
+
+                    #print(len(tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="depth-1_size-3")))
 
             concats = []
             for i in range(cropsize):
-                concats.append(tf.stack(output[:][i], axis=1))
+                concats.append(tf.stack(output[i][:], axis=1))
             output = tf.stack(concats, axis=2)
 
-            output = tf.reshape(output, [-1, cropsize, cropsize, 1])
+            output = tf.expand_dims(output, 3)
+            #print(output)
 
-            print(output)
             outputs.append(output)
 
     return filters, filter_scopes, filter_depths, filter_widths, outputs
@@ -306,7 +443,7 @@ def experiment(img, learning_rate_ph):
         train_op = optimizer.minimize(losses[i])
         train_ops.append(train_op)
 
-    return {'filters': filters, 'filter_scopes': filter_scopes, 'filter_scopes': filter_depths,
+    return {'filters': filters, 'filter_scopes': filter_scopes, 'filter_depths': filter_depths,
             'filter_widths': filter_widths, 'outputs': outputs, 'train_ops': train_ops,
             'losses': losses}
 
@@ -383,13 +520,13 @@ def preprocess(img):
     img[np.isnan(img)] = 0.
     img[np.isinf(img)] = 0.
 
-    img = cv2.resize(img, (cropsize, cropsize))
+    img = img[:cropsize,:cropsize] #cv2.resize(img, (cropsize, cropsize))
 
     img = scale0to1(img)
 
-    img /= np.sum(img)
+    img /= np.mean(img)
 
-    return img
+    return img.astype(np.float32)
 
 def record_parser(record):
     img = preprocess(flip_rotate(load_image(record)))
@@ -464,6 +601,8 @@ class RunConfig(tf.contrib.learn.RunConfig):
 
 def main():
 
+    print("Initializing")
+
     tf.reset_default_graph()
 
     temp = set(tf.all_variables())
@@ -496,8 +635,6 @@ def main():
 
                 with tf.Session(config=sess_config) as sess:
 
-                    print("Session started")
-
                     sess.run(tf.initialize_variables(set(tf.all_variables()) - temp))
                     temp = set(tf.all_variables())
 
@@ -522,11 +659,14 @@ def main():
                     counter = 0
                     save_counter = counter
                     counter_init = counter+1
+
+                    print("Session started")
+
                     while counter < 20000:
 
                         counter += 1
 
-                        lr = np.array([10*(1.-counter/20001)])
+                        lr = np.array([0.005*(1.-counter/20001)])
 
                         base_dict = {learning_rate_ph: lr}
 
@@ -561,6 +701,17 @@ def main():
                                 val_log.write("Iter: {}, {}".format(counter, losses))
                             except:
                                 print("Write to val log file failed")
+
+                        #if counter > 100:
+                        #    vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, exp_dict['filter_scopes'][0])
+                        #    v = sess.run(vars)
+                        #    print(v)
+
+                        #    filtered_img = sess.run(exp_dict['outputs'], feed_dict=feed_dict)
+                        #    disp(_img[0])
+                        #    disp(filtered_img[0][0].reshape((cropsize,cropsize)).T)
+
+                        #    os.system("pause")
 
                     #Save the model
                     saver.save(sess, save_path=model_dir+"model/", global_step=counter)
