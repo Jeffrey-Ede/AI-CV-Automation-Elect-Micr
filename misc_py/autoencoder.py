@@ -1,127 +1,122 @@
-##Modified aligned xception
-def architecture(lq, img=None, mode=None):
-    """Atrous convolutional encoder-decoder noise-removing network"""
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
 
-    #phase = mode == tf.estimator.ModeKeys.TRAIN #phase is true during training
-    concat_axis = 3
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
-    ##Reusable blocks
+import argparse
 
-    def conv_block(input, filters, phase=phase):
-        """
-        Convolution -> batch normalisation -> leaky relu
-        phase defaults to true, meaning that the network is being trained
-        """
+import numpy as np
+import tensorflow as tf
 
-        conv_block = tf.layers.conv2d(inputs=input,
-            filters=filters,
-            kernel_size=3,
-            padding="SAME",
-            activation=tf.nn.relu)
+import cv2
+from scipy.misc import imread
 
-        #conv_block = tf.contrib.layers.batch_norm(
-        #    conv_block,
-        #    center=True, scale=True,
-        #    is_training=phase)
+import time
 
-        #conv_block = tf.nn.leaky_relu(
-        #    features=conv_block,
-        #    alpha=0.2)
-        #conv_block = tf.nn.relu(conv_block)
+import os, random
 
-        return conv_block
+from PIL import Image
 
-    def aspp_block(input, phase=phase):
-        """
-        Atrous spatial pyramid pooling
-        phase defaults to true, meaning that the network is being trained
-        """
+import functools
+import itertools
 
-        #Convolutions at multiple rates
-        conv1x1 = tf.layers.conv2d(inputs=input,
-            filters=aspp_filters,
-            kernel_size=1,
-            padding="same",
-            activation=tf.nn.relu,
-            name="1x1")
-        #conv1x1 = tf.contrib.layers.batch_norm(
-        #    conv1x1,
-        #    center=True, scale=True,
-        #    is_training=phase)
+import collections
+import six
 
-        conv3x3_rateSmall = tf.layers.conv2d(inputs=input,
-            filters=aspp_filters,
-            kernel_size=3,
-            padding="same",
-            dilation_rate=aspp_rateSmall,
-            activation=tf.nn.relu,
-            name="lowRate")
-        #conv3x3_rateSmall = tf.contrib.layers.batch_norm(
-        #    conv3x3_rateSmall,
-        #    center=True, scale=True,
-        #    is_training=phase)
+from tensorflow.python.platform import tf_logging as logging
+from tensorflow.core.framework import node_def_pb2
+from tensorflow.python.framework import device as pydev
+from tensorflow.python.training import basic_session_run_hooks
+from tensorflow.python.training import session_run_hook
+from tensorflow.python.training import training_util
+from tensorflow.python.training import device_setter
+from tensorflow.contrib.learn.python.learn import run_config
 
-        conv3x3_rateMedium = tf.layers.conv2d(inputs=input,
-            filters=aspp_filters,
-            kernel_size=3,
-            padding="same",
-            dilation_rate=aspp_rateMedium,
-            activation=tf.nn.relu,
-            name="mediumRate")
-        #conv3x3_rateMedium = tf.contrib.layers.batch_norm(
-        #    conv3x3_rateMedium,
-        #    center=True, scale=True,
-        #    is_training=phase)
+slim = tf.contrib.slim
 
-        conv3x3_rateLarge = tf.layers.conv2d(inputs=input,
-            filters=aspp_filters,
-            kernel_size=3,
-            padding="same",
-            dilation_rate=aspp_rateLarge,
-            activation=tf.nn.relu,
-            name="highRate")
-        #conv3x3_rateLarge = tf.contrib.layers.batch_norm(
-        #    conv3x3_rateLarge,
-        #    center=True, scale=True,
-        #    is_training=phase)
+tf.logging.set_verbosity(tf.logging.DEBUG)
 
-        #Image-level features
-        pooling = tf.nn.pool(input=input,
-            window_shape=(2,2),
-            pooling_type="AVG",
-            padding="SAME",
-            strides=(2, 2))
-        #Use 1x1 convolutions to project into a feature space the same size as
-        #the atrous convolutions'
-        pooling = tf.layers.conv2d(
-            inputs=pooling,
-            filters=aspp_filters,
-            kernel_size=1,
-            padding="SAME",
-            name="imageLevel")
-        pooling = tf.image.resize_images(pooling, [64, 64])
-        #pooling = tf.contrib.layers.batch_norm(
-        #    pooling,
-        #    center=True, scale=True,
-        #    is_training=phase)
+data_dir = "G:/unaltered_TEM_crops-171x171/"
+#data_dir = "G:/unaltered_STEM_crops-171x171/"
 
-        #Concatenate the atrous and image-level pooling features
-        concatenation = tf.concat(values=[conv1x1, conv3x3_rateSmall, conv3x3_rateMedium, conv3x3_rateLarge, pooling],
-            axis=concat_axis)
+modelSavePeriod = 2 #Train timestep in hours
+modelSavePeriod *= 3600 #Convert to s
+model_dir = "G:/noise-removal-kernels-TEM/autoencoder/16/"
+#model_dir = "G:/noise-removal-kernels-STEM/depth1/"
 
-        #Reduce the number of channels
-        reduced = tf.layers.conv2d(
-            inputs=concatenation,
-            filters=aspp_filters,
-            kernel_size=1,
-            padding="SAME")
+shuffle_buffer_size = 5000
+num_parallel_calls = 4
+num_parallel_readers = 4
+prefetch_buffer_size = 5
+batch_size = 32
+num_gpus = 1
 
-        return reduced
+#batch_size = 8 #Batch size to use during training
+num_epochs = 1000000 #Dataset repeats indefinitely
 
+logDir = "C:/dump/train/"
+log_file = model_dir+"log.txt"
+val_log_file = model_dir+"val_log.txt"
+variables_file = model_dir+"variables.txt"
+log_every = 1 #Log every _ examples
 
-    def strided_conv_block(input, filters, stride, rate=1, phase=phase):
+channels = 1 #Greyscale input image
+
+#Sidelength of images to feed the neural network
+cropsize = 160
+generator_input_size = cropsize
+height_crop = width_crop = cropsize
+
+#hparams = experiment_hparams(train_batch_size=batch_size, eval_batch_size=16)
+
+num_workers = 1
+
+increase_batch_size_by_factor = 1
+effective_batch_size = increase_batch_size_by_factor*batch_size
+
+val_skip_n = 10
+
+save_result_every_n_batches = 50000
+
+def architecture(input, bn_ph):
+
+    phase = True
+
+    def _instance_norm(net):
+        batch, rows, cols, channels = [i.value for i in net.get_shape()]
+        var_shape = [channels]
+        mu, sigma_sq = tf.nn.moments(net, [1,2], keep_dims=True)
+        shift = tf.Variable(tf.zeros(var_shape), trainable=False)
+        scale = tf.Variable(tf.ones(var_shape), trainable=False)
+        epsilon = 1e-3
+        normalized = (net-mu)/(sigma_sq + epsilon)**(.5)
+        return scale * normalized + shift
+
+    def _batch_norm_fn(input, train=True):
+        batch_norm = tf.contrib.layers.batch_norm(
+            input,
+            decay=0.9997,
+            epsilon=0.001,
+            center=True, 
+            scale=True,
+            is_training=bn_ph,
+            fused=True,
+            zero_debias_moving_mean=False,
+            renorm=False)
+        return batch_norm
+
+    def batch_then_activ(input):
+        _batch_then_activ = _batch_norm_fn(input)
+        _batch_then_activ = tf.nn.relu(_batch_then_activ)
+        return _batch_then_activ
+
+    def strided_conv_block(input, filters, stride, rate=1, phase=phase, 
+                        extra_batch_norm=True):
         
-        return slim.separable_convolution2d(inputs=input,
+        strided_conv = slim.separable_convolution2d(
+            inputs=input,
             num_outputs=filters,
             kernel_size=3,
             depth_multiplier=1,
@@ -129,8 +124,8 @@ def architecture(lq, img=None, mode=None):
             padding='SAME',
             data_format='NHWC',
             rate=rate,
-            activation_fn=tf.nn.relu,
-            normalizer_fn=None,
+            activation_fn=None,#tf.nn.relu,
+            normalizer_fn=_batch_norm_fn if extra_batch_norm else False,
             normalizer_params=None,
             weights_initializer=tf.contrib.layers.xavier_initializer(),
             weights_regularizer=None,
@@ -139,279 +134,382 @@ def architecture(lq, img=None, mode=None):
             reuse=None,
             variables_collections=None,
             outputs_collections=None,
-            trainable=True,
-            scope=None)
+            trainable=True)
+        strided_conv = batch_then_activ(strided_conv)
 
-    def deconv_block(input, filters, phase=phase):
+        return strided_conv
+
+    def deconv_block(input, filters):
         '''Transpositionally convolute a feature space to upsample it'''
-        
-        #Residual
-        residual = tf.layers.conv2d(
+
+        deconv = slim.conv2d_transpose(
             inputs=input,
-            filters=filters,
-            kernel_size=1,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
-
-        #Main flow
-        main_flow = strided_conv_block(
-            input=input,
-            filters=filters,
-            stride=1)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters,
-            stride=1)
-        main_flow = tf.layers.conv2d_transpose(
-            inputs=main_flow,
-            filters=filters,
+            num_outputs=filters,
             kernel_size=3,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
+            stride=2,
+            padding='SAME',
+            activation_fn=None)
+        deconv = batch_then_activ(deconv)
 
-        return deconv_block + residual
+        return deconv
 
-    def xception_entry_flow(input):
+    a = strided_conv_block(input, 64, 2)
+    a = strided_conv_block(a, 128, 2)
+    a = strided_conv_block(a, 256, 2)
 
-        #Entry flow 0
-        entry_flow = tf.layers.conv2d(
-            inputs=input,
-            filters=filters00,
-            kernel_size=3,
-            strides = 2,
-            padding="SAME",
-            activation=tf.nn.relu)
-        entry_flow = tf.layers.conv2d(
-            inputs=entry_flow,
-            filters=filters01,
-            kernel_size=3,
-            padding="SAME",
-            activation=tf.nn.relu)
+    a = strided_conv_block(a, 16, 1)
 
-        #Residual 1
-        residual1 = tf.layers.conv2d(
-            inputs=entry_flow,
-            filters=filters1,
-            kernel_size=1,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
-       
-        #Main flow 1
-        main_flow1 = strided_conv_block(
-            input=entry_flow,
-            filters=filters1,
-            stride=1)
-        main_flow1 = strided_conv_block(
-            input=main_flow1,
-            filters=filters1,
-            stride=1)
-        main_flow1_strided = strided_conv_block(
-            input=main_flow1,
-            filters=filters1,
-            stride=2)
+    a = deconv_block(a, 256)
+    a = deconv_block(a, 128)
+    a = deconv_block(a, 64)
 
-        residual_connect1 = main_flow1_strided + residual1
+    a = slim.conv2d(
+                inputs=a,
+                num_outputs=1,
+                kernel_size=3,
+                padding="SAME",
+                activation_fn=None)
+    a = _instance_norm(a)
 
-        #Residual 2
-        residual2 = tf.layers.conv2d(
-            inputs=residual_connect1,
-            filters=filters2,
-            kernel_size=1,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
-       
-        #Main flow 2
-        main_flow2 = strided_conv_block(
-            input=main_flow1,
-            filters=filters2,
-            stride=1)
-        main_flow2 = strided_conv_block(
-            input=main_flow2,
-            filters=filters2,
-            stride=1)
-        main_flow2_strided = strided_conv_block(
-            input=main_flow2,
-            filters=filters2,
-            stride=2)
+    return a
 
-        residual_connect2 = main_flow2_strided + residual2
 
-        #Residual 3
-        residual3 = tf.layers.conv2d(
-            inputs=residual_connect2,
-            filters=filters3,
-            kernel_size=1,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
-       
-        #Main flow 3
-        main_flow3 = strided_conv_block(
-            input=residual_connect2,
-            filters=filters3,
-            stride=1)
-        main_flow3 = strided_conv_block(
-            input=main_flow3,
-            filters=filters3,
-            stride=1)
-        main_flow3_strided = strided_conv_block(
-            input=main_flow3,
-            filters=filters3,
-            stride=2)
+def experiment(img, learning_rate_ph, bn_ph):
 
-        residual_connect3 = main_flow3_strided + residual3
+    imgs = tf.reshape(img, [-1, cropsize, cropsize, 1])
 
-        #Residual 4
-        residual4 = tf.layers.conv2d(
-            inputs=residual_connect3,
-            filters=filters4,
-            kernel_size=1,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
-       
-        #Main flow 4
-        main_flow4 = strided_conv_block(
-            input=main_flow3,
-            filters=filters4,
-            stride=1)
-        main_flow4 = strided_conv_block(
-            input=main_flow4,
-            filters=filters4,
-            stride=1)
-        main_flow4_strided = strided_conv_block(
-            input=main_flow4,
-            filters=filters4,
-            stride=2)
+    outputs = architecture(img, bn_ph)
 
-        residual_connect4 = main_flow4_strided + residual4
+    loss = tf.losses.mean_squared_error(imgs, outputs)
 
-        return residual_connect4, entry_flow, main_flow1, main_flow2, main_flow3, main_flow4
+    optimizer = tf.train.AdamOptimizer(learning_rate_ph[0])
+    train_op = optimizer.minimize(loss)
 
-    def xception_middle_block(input):
-        
-        main_flow = strided_conv_block(
-            input=input,
-            filters=filters4,
-            stride=1)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters4,
-            stride=1)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters4,
-            stride=1)
+    return {'outputs': [outputs], 'loss': [loss], 'train_op': [train_op]}
 
-        return main_flow + residual
+def flip_rotate(img):
+    """Applies a random flip || rotation to the image, possibly leaving it unchanged"""
 
-    def xception_exit_flow(input):
+    choice = np.random.randint(0, 8)
+    
+    if choice == 0:
+        return img
+    if choice == 1:
+        return np.rot90(img, 1)
+    if choice == 2:
+        return np.rot90(img, 2)
+    if choice == 3:
+        return np.rot90(img, 3)
+    if choice == 4:
+        return np.flip(img, 0)
+    if choice == 5:
+        return np.flip(img, 1)
+    if choice == 6:
+        return np.flip(np.rot90(img, 1), 0)
+    if choice == 7:
+        return np.flip(np.rot90(img, 1), 1)
 
-        #Residual
-        residual = tf.layers.conv2d(
-            inputs=input,
-            filters=filters5,
-            kernel_size=1,
-            strides=2,
-            padding="SAME",
-            activation=tf.nn.relu)
+def load_image(addr, resize_size=None, img_type=np.float32):
+    """Read an image and make sure it is of the correct type. Optionally resize it"""
 
-        #Main flow
-        main_flow = main_flow = strided_conv_block(
-            input=minput,
-            filters=filters5,
-            stride=1)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters5,
-            stride=1)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters5,
-            stride=2)
+    try:
+        img = imread(addr, mode='F')
 
-        #Residual connection
-        main_flow = main_flow + residual
+        x = np.random.randint(0, img.shape[0]-cropsize)
+        y = np.random.randint(0, img.shape[1]-cropsize)
 
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters5,
-            stride=1)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters5,
-            stride=1,
-            rate=2)
-        main_flow = strided_conv_block(
-            input=main_flow,
-            filters=filters5,
-            stride=1)
+        img = img[x:(x+cropsize),y:(y+cropsize)]
+    except:
+        img = 0.5*np.ones((cropsize,cropsize))
+        print("Image read failed")
 
-        return main_flow
+    return img.astype(img_type)
 
-    '''Model building'''
-    input_layer = tf.reshape(lq, [-1, cropsize, cropsize, channels])
+def scale0to1(img):
+    """Rescale image between 0 and 1"""
 
-    #Build Xception
-    main_flow, side_flow0, side_flow1, side_flow2, side_flow3, side_flow4 = xception_entry_flow(input_layer)
+    min = np.min(img)
+    max = np.max(img)
 
-    for _ in range(numMiddleXception):
-        main_flow = xception_middle_block(main_flow)
-
-    main_flow = xception_exit_flow(main_flow)
-
-    ##Atrous spatial pyramid pooling
-    aspp = aspp_block(main_flow)
-
-    decoder_flow = tf.image.resize_images(aspp, [256, 256])
-
-    #Concatonation and transpositional convolution 1
-    decoder_flow = tf.concat(values=[decoder_flow, side_flow3],
-        axis=concat_axis)
-    decoder_flow = deconv_block(decoder_flow)
-
-    #Concatonation and transpositional convolution 2
-    decoder_flow = tf.concat(values=[decoder_flow, side_flow2],
-        axis=concat_axis)
-    decoder_flow = deconv_block(decoder_flow)
-
-    #Concatonation and transpositional convolution 3
-    decoder_flow = tf.concat(values=[decoder_flow, side_flow1],
-        axis=concat_axis)
-    decoder_flow = deconv_block(decoder_flow)
-
-    #Prepare the output
-    decoder_flow = tf.concat(values=[decoder_flow, side_flow0],
-        axis=concat_axis)
-    decoder_flow = tf.layers.conv2d(
-            inputs=residual_connect3,
-            filters=filters01,
-            kernel_size=3,
-            strides=1,
-            padding="SAME",
-            activation=tf.nn.relu)
-
-    #Create final image with 1x1 convolutions
-    output = tf.layers.conv2d_transpose(
-        inputs=decoder_flow,
-        filters=1,
-        kernel_size=3,
-        padding="SAME",
-        activation=tf.nn.relu)
-
-    #Image values will be between 0 and 1
-    output = tf.clip_by_value(output,
-        clip_value_min=0,
-        clip_value_max=1)
-
-    if phase: #Calculate loss during training
-        loss = cropsize * cropsize * tf.reduce_mean(tf.squared_difference(input_layer, output))
-        tf.summary.histogram("loss", loss)
+    if min == max:
+        img.fill(0.5)
     else:
-        loss = -1
+        img = (img-min) / (max-min)
 
-    return loss, output                     
+    return img.astype(np.float32)
+
+def norm_img(img):
+    
+    min = np.min(img)
+    max = np.max(img)
+
+    if min == max:
+        img.fill(0.)
+    else:
+        a = 0.5*(min+max)
+        b = 0.5*(max-min)
+
+        img = (img-a) / b
+
+    return img.astype(np.float32)
+
+def preprocess(img):
+
+    img[np.isnan(img)] = 0.
+    img[np.isinf(img)] = 0.
+
+    img = scale0to1(img)
+
+    img /= np.mean(img)
+
+    return img.astype(np.float32)
+
+def record_parser(record):
+
+    img = preprocess(flip_rotate(load_image(record)))
+
+    if np.sum(np.isfinite(img)) != cropsize**2:
+        img = np.ones((cropsize, cropsize), dtype=np.float32)
+
+    return img
+
+def reshaper(img):
+    img = tf.reshape(img, [cropsize, cropsize, channels])
+    return img
+
+
+def input_fn(dir, subset, batch_size):
+    """Create a dataset from a list of filenames and shard batches from it"""
+
+    with tf.device('/cpu:0'):
+
+        dataset = tf.data.Dataset.list_files(dir+"*.tif") #dir+subset+"/"+"*.tif"
+        dataset = dataset.shuffle(buffer_size=shuffle_buffer_size)
+        dataset = dataset.repeat(num_epochs)
+        dataset = dataset.map(
+            lambda file: tf.py_func(record_parser, [file], [tf.float32]),
+            num_parallel_calls=num_parallel_calls)
+        dataset = dataset.map(reshaper, num_parallel_calls=num_parallel_calls)
+        dataset = dataset.batch(batch_size=batch_size)
+        dataset = dataset.prefetch(buffer_size=prefetch_buffer_size)
+
+        iter = dataset.make_one_shot_iterator()
+        img_batch = iter.get_next()
+
+        return img_batch
+
+def disp(img):
+    cv2.namedWindow('CV_Window', cv2.WINDOW_NORMAL)
+    cv2.imshow('CV_Window', scale0to1(img))
+    cv2.waitKey(0)
+    return
+
+class RunConfig(tf.contrib.learn.RunConfig): 
+    def uid(self, whitelist=None):
+        """
+        Generates a 'Unique Identifier' based on all internal fields.
+        Caller should use the uid string to check `RunConfig` instance integrity
+        in one session use, but should not rely on the implementation details, which
+        is subject to change.
+        Args:
+          whitelist: A list of the string names of the properties uid should not
+            include. If `None`, defaults to `_DEFAULT_UID_WHITE_LIST`, which
+            includes most properties user allowes to change.
+        Returns:
+          A uid string.
+        """
+        if whitelist is None:
+            whitelist = run_config._DEFAULT_UID_WHITE_LIST
+
+        state = {k: v for k, v in self.__dict__.items() if not k.startswith('__')}
+        # Pop out the keys in whitelist.
+        for k in whitelist:
+            state.pop('_' + k, None)
+
+        ordered_state = collections.OrderedDict(
+            sorted(state.items(), key=lambda t: t[0]))
+        # For class instance without __repr__, some special cares are required.
+        # Otherwise, the object address will be used.
+        if '_cluster_spec' in ordered_state:
+            ordered_state['_cluster_spec'] = collections.OrderedDict(
+                sorted(ordered_state['_cluster_spec'].as_dict().items(), key=lambda t: t[0]))
+        return ', '.join(
+            '%s=%r' % (k, v) for (k, v) in six.iteritems(ordered_state))
+
+def main():
+
+    print("Initializing")
+
+    tf.reset_default_graph()
+
+    temp = set(tf.all_variables())
+
+    with open(log_file, 'a') as log:
+        log.flush()
+
+        with open(val_log_file, 'a') as val_log:
+            val_log.flush()
+
+            # The env variable is on deprecation path, default is set to off.
+            os.environ['TF_SYNC_ON_FINISH'] = '0'
+            os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
+
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) #For batch normalisation windows
+            with tf.control_dependencies(update_ops):
+
+                # Session configuration.
+                log_device_placement = False #Once placement is correct, this fills up too much of the cmd window...
+                sess_config = tf.ConfigProto(
+                    allow_soft_placement=True,
+                    log_device_placement=log_device_placement,
+                    intra_op_parallelism_threads=1,
+                    gpu_options=tf.GPUOptions(force_gpu_compatible=True))
+
+                config = RunConfig(session_config=sess_config, model_dir=model_dir)
+
+                img = input_fn(data_dir, 'train', batch_size=batch_size)
+                img_val = input_fn(data_dir, 'val', batch_size=batch_size)
+
+                update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+                with tf.control_dependencies(update_ops):
+                    with tf.Session(config=sess_config) as sess:
+
+                        sess.run(tf.initialize_variables(set(tf.all_variables()) - temp))
+                        temp = set(tf.all_variables())
+
+                        __img = sess.run(img)
+                        img_ph = [tf.placeholder(tf.float32, shape=i.shape, name='img')
+                                    for i in __img]
+                        del __img
+
+                        learning_rate_ph = tf.placeholder(tf.float32, name='learning_rate')
+                        bn_ph = tf.placeholder(tf.bool, name='bn')
+
+                        exp_dict = experiment(img_ph, learning_rate_ph, bn_ph)
+
+                        #########################################################################################
+
+                        sess.run( tf.initialize_variables(set(tf.all_variables()) - temp) )
+                        train_writer = tf.summary.FileWriter( logDir, sess.graph )
+
+                        #print(tf.all_variables())
+                        saver = tf.train.Saver()
+                        #saver.restore(sess, tf.train.latest_checkpoint(model_dir+"model/"))
+
+                        counter = 0
+                        save_counter = counter
+                        counter_init = counter+1
+
+                        print("Session started")
+
+                        #with open(variables_file, 'w') as variables:
+                        #    variables.flush()
+                        #    for i in range(num_filters):
+                        #        vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, exp_dict['filter_scopes'][i])
+                        #        names = [v.name for v in vars]
+
+                        #        print(names)
+                        #        for n in names:
+                        #            variables.write(n)
+                        #        variables.write("\r\n")
+
+                        #        v = sess.run(vars)
+                        #        names = sess.run(names)
+
+                        #        variables.write(str(v))
+                        #        variables.write("\r\n")
+                        #quit()
+
+                        counter = 0
+                        max_count = 100000
+                        while counter < max_count:
+
+                            counter += 1
+
+                            step = counter // 50000
+                            max_step = max_count // 50000
+                            lr = 0.01*np.array([(1.-step/(max_step))])**1.5
+
+                            base_dict = {learning_rate_ph: lr,
+                                         bn_ph: counter < max_count/2}
+
+                            _img = sess.run(img)
+
+                            feed_dict = base_dict.copy()
+                            feed_dict.update({ph: img for ph, img in zip(img_ph, _img)})
+
+                            #Save outputs occasionally
+                            if counter <= 1 or not counter % save_result_every_n_batches or (counter < 10000 and not counter % 2000) or counter == counter_init:
+
+                                results = sess.run( exp_dict['train_op']+exp_dict['loss']+exp_dict['outputs'], feed_dict=feed_dict )
+
+                                losses = results[1]
+
+                                input_scaled = scale0to1(_img[0])
+                                output_scaled = scale0to1(results[2][0])
+
+                                try:
+                                    save_input_loc = model_dir+"input-"+str(counter)+".tif"
+                                    save_output_loc = model_dir+"output-"+str(counter)+".tif"
+                                    Image.fromarray(input_scaled.reshape(cropsize, cropsize).astype(np.float32)).save( save_input_loc )
+                                    Image.fromarray(output_scaled.reshape(cropsize, cropsize).astype(np.float32)).save( save_output_loc )
+                                except:
+                                    print("Image save failed")
+
+                            else:
+                                _, losses = sess.run( exp_dict['train_op']+exp_dict['loss'], feed_dict=feed_dict )
+
+                            print("Iter: {}, Losses: {}".format(counter, losses))
+
+                            try:
+                                log.write("Iter: {}, {}".format(counter, losses))
+                            except:
+                                print("Write to discr pred file failed")
+
+                            if False:#not counter % val_skip_n:
+
+                                _img = sess.run(img_val)
+
+                                feed_dict = base_dict.copy()
+                                feed_dict.update({ph: img for ph, img in zip(img_ph, _img)})
+
+                                losses = sess.run( exp_dict['loss'], feed_dict=feed_dict )
+
+                                print("Iter: {}, Val losses: {}".format(counter, losses))
+
+                                try:
+                                    val_log.write("Iter: {}, {}".format(counter, losses))
+                                except:
+                                    print("Write to val log file failed")
+
+                            #if counter > 0:
+                            #    vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, exp_dict['filter_scopes'][0])
+                            #    v = sess.run(vars)
+                            #    print(v)
+
+                                #results = sess.run(exp_dict['outputs']+exp_dict['ps'], feed_dict=feed_dict)
+                                #l = len(results)
+                                #print(results[0])
+                                #print(l)
+                                #print(results[l//2])
+                                ##disp(_img[0])
+                                #disp(results[0][0].reshape((cropsize-2,cropsize-2)).T)
+                                #disp(results[l//2][0].reshape((cropsize-2,cropsize-2)).T)
+
+                                #os.system("pause")
+
+                            #Save the model
+                            if not counter % 5000:
+                                saver.save(sess, save_path=model_dir+"model/", global_step=counter)
+
+                        #Save the model
+                        saver.save(sess, save_path=model_dir+"model/", global_step=counter)
+
+    return 
+
+if __name__ == '__main__':
+
+    main()
+
+
+
