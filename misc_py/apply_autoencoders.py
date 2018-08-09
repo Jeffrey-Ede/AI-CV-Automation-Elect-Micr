@@ -105,11 +105,11 @@ def architecture(input, encoding_features):
     def _batch_norm_fn(input, train=True):
         batch_norm = tf.contrib.layers.batch_norm(
             input,
-            decay=0.9997,
+            decay=0.999,
             epsilon=0.001,
             center=True, 
             scale=True,
-            is_training=False,
+            is_training=True,
             fused=True,
             zero_debias_moving_mean=False,
             renorm=False)
@@ -121,7 +121,7 @@ def architecture(input, encoding_features):
         return _batch_then_activ
 
     def strided_conv_block(input, filters, stride, rate=1, phase=phase, 
-                        extra_batch_norm=True):
+                           extra_batch_norm=True):
         
         strided_conv = slim.separable_convolution2d(
             inputs=input,
@@ -133,7 +133,7 @@ def architecture(input, encoding_features):
             data_format='NHWC',
             rate=rate,
             activation_fn=None,#tf.nn.relu,
-            normalizer_fn=_batch_norm_fn if extra_batch_norm else False,
+            normalizer_fn=_batch_norm_fn if extra_batch_norm else None,
             normalizer_params=None,
             weights_initializer=tf.contrib.layers.xavier_initializer(),
             weights_regularizer=None,
@@ -261,17 +261,6 @@ def norm_img(img):
 
     return img.astype(np.float32)
 
-def preprocess(img):
-
-    img[np.isnan(img)] = 0.
-    img[np.isinf(img)] = 0.
-
-    img = scale0to1(img)
-
-    img /= np.mean(img)
-
-    return img.astype(np.float32)
-
 def record_parser(record):
 
     img = preprocess(flip_rotate(load_image(record)))
@@ -282,8 +271,9 @@ def record_parser(record):
     return img
 
 def disp(img):
+    d = int(round(np.sqrt(img.size)))
     cv2.namedWindow('CV_Window', cv2.WINDOW_NORMAL)
-    cv2.imshow('CV_Window', scale0to1(img))
+    cv2.imshow('CV_Window', scale0to1(img.reshape((d,d))))
     cv2.waitKey(0)
     return
 
@@ -338,22 +328,12 @@ class Micrograph_Autoencoder(object):
             intra_op_parallelism_threads=1,
             gpu_options=tf.GPUOptions(force_gpu_compatible=True))
 
-        sess =  tf.Session(config=sess_config)
-
-        sess.run(tf.initialize_variables(set(tf.all_variables()) - temp))
-        temp = set(tf.all_variables())
-
-        __img = sess.run(img)
-        img_ph = [tf.placeholder(tf.float32, shape=i.shape, name='img')
-                    for i in __img]
-        del __img
+        img_ph = list([tf.placeholder(tf.float32, shape=(cropsize, cropsize, 1), name='img')])
 
         outputs = experiment(img_ph, encoding_features)
 
-        #########################################################################################
-
-        sess.run( tf.initialize_variables(set(tf.all_variables()) - temp) )
-        train_writer = tf.summary.FileWriter( logDir, sess.graph )
+        sess =  tf.Session(config=sess_config)
+        sess.run(tf.initialize_variables(tf.all_variables()))
 
         #print(tf.all_variables())
         saver = tf.train.Saver()
@@ -363,7 +343,7 @@ class Micrograph_Autoencoder(object):
         self.inputs = img_ph
         self.outputs = outputs
 
-    def preprocess(img):
+    def preprocess(self, img):
 
         img[np.isnan(img)] = 0.
         img[np.isinf(img)] = 0.
@@ -372,25 +352,30 @@ class Micrograph_Autoencoder(object):
 
         img /= np.mean(img)
 
-        return img.astype(np.float32)
+        return np.reshape(img.astype(np.float32), (160, 160, 1))
 
     def denoise_crop(self, crop, preprocess=True, scaling=True, postprocess=True):
 
         if scaling:
             offset = np.min(crop)
-            scale = 1. / (np.mean(crop) - offset)
+            scale = np.mean(crop) - offset
             
             if scale:
-                crop = (crop-offset)/scale
-            else: 
-                crop.fill(0.5)
+                crop = (crop-offset) / scale
+            else:
+                crop.fill(1.)
 
-        pred = self.sess.run(self._tower_preds, 
-                             feed_dict={self.img_ph[0]: 
+        #print(scale, offset)
+
+        pred = self.sess.run(self.outputs, 
+                             feed_dict={self.inputs[0]: 
                                         self.preprocess(crop) if preprocess else crop})
 
         if scaling:
-            pred = pred*scale+offset if scale else pred*offset/np.mean(pred)
+            pred = scale*pred+offset if scale else pred*offset/np.mean(pred)
+
+        if postprocess:
+            pred = pred.reshape((cropsize, cropsize))
 
         return pred
 
@@ -545,4 +530,20 @@ class Micrograph_Autoencoder(object):
 
         return denoised
 
-#if __name__ == '__main__':
+if __name__ == '__main__':
+
+    loc = r'G:\noise-removal-kernels-STEM\autoencoder\16\input-45000.tif'
+    img = imread(loc, mode='F')
+    img = 233*img[:160, :160]
+
+    ckpt_loc = 'G:/noise-removal-kernels-TEM/autoencoder/16/model/'
+    nn = Micrograph_Autoencoder(checkpoint_loc=ckpt_loc,
+                                visible_cuda='1',
+                                encoding_features=16)
+
+    nn_img = nn.denoise_crop(img)
+    disp(img)
+    disp(nn_img)
+
+    print(img)
+    print(nn_img)
