@@ -662,14 +662,20 @@ def get_multiscale_crops(input, multiscale_channels=1):
 
     return small, medium, large
 
-def adam_updates(params, cost_or_grads, lr=0.001, mom1=np.array([0.5]), mom2=np.array([0.999]), clip_norm=40):
+
+def adam_updates(params, cost_or_grads, lr=0.001, mom1=np.array([0.5]), mom2=np.array([0.999]), clip_norm=None):
     ''' Adam optimizer '''
     updates = []
     if type(cost_or_grads) is not list:
         grads = tf.gradients(cost_or_grads, params)
     else:
         grads = cost_or_grads
-    #grads = tf.clip_by_global_norm(grads, clip_norm=clip_norm)
+
+    if clip_norm:
+        raise Exception('Functionality not added yet')
+        #grads = tf.clip_by_global_norm(grads, clip_norm=clip_norm)
+
+    #Weight normalized ADAM updates
     t = tf.Variable(1., 'adam_t')
     for p, g in zip(params, grads):
         mg = tf.Variable(tf.zeros(p.get_shape()), p.name + '_adam_mg')
@@ -687,7 +693,9 @@ def adam_updates(params, cost_or_grads, lr=0.001, mom1=np.array([0.5]), mom2=np.
         updates.append(mg.assign(mg_t))
         updates.append(p.assign(p_t))
     updates.append(t.assign_add(1))
+
     return tf.group(*updates)
+
 
 def super_confuser(input, reuse=False):
 
@@ -697,6 +705,7 @@ def super_confuser(input, reuse=False):
     with tf.variable_scope("GAN/SuperConfuser", reuse=reuse):
         
         x = strided_conv_block(input, features1, 1, 1)
+
         x = strided_conv_block(x, features2, 2, 1)
         x0 = x
         x = strided_conv_block(x, features2, 1, 1)
@@ -730,20 +739,25 @@ def confuser(input, reuse=False):
 
     with tf.variable_scope("GAN/Confuser", reuse=reuse):
 
-        x = strided_conv_block(input, features1, 2, 1)
-        x = strided_conv_block(x, features2, 2, 1)
-        x = strided_conv_block(x, features3, 2, 1)
+        with tf.variable_scope('start'):
+            x = strided_conv_block(input, features1, 2, 1)
+            x = strided_conv_block(x, features2, 2, 1)
 
-        partway = x #To go to super=confuser
+        with tf.variable_scope('mid'):
+            x = strided_conv_block(x, features3, 2, 1)
 
-        x = strided_conv_block(x, features4, 2, 1)
-        x = strided_conv_block(x, features5, 2, 1)
-        x = strided_conv_block(x, features6, 2, 1)
+            partway = x #To go to super=confuser
 
-        x = tf.reshape(x, (-1, features6*(cropsize//(2**6)**2)))
-        x = tf.contrib.layers.fully_connected(inputs=x,
-                                              num_outputs=1,
-                                              activation_fn=None)
+        with tf.variable_scope('end'):
+            x = strided_conv_block(x, features4, 2, 1)
+
+            x = strided_conv_block(x, features5, 2, 1)
+            x = strided_conv_block(x, features6, 2, 1)
+
+            x = tf.reshape(x, (-1, features6*(cropsize//(2**6)**2)))
+            x = tf.contrib.layers.fully_connected(inputs=x,
+                                                    num_outputs=1,
+                                                    activation_fn=None)
         x = tf.sigmoid(x)
 
     return partway, x
@@ -818,41 +832,61 @@ def discriminator(input, reuse=False, name="Discr1"):
     return [output] + layers
 
 
-def distiller(input, reuse=False):
+def distiller(input, reuse=False, name="Distiller"):
 
-    features1 = 25
-    features2 = 50
-    features3 = 100
-    features4 = 200
-    features5 = 400
-    features6 = 800
+    features1 = 32
+    features2 = 64
+    features3 = 128
+    features4 = 256
+    features5 = 512
+    features6 = 512
 
-    with tf.variable_scope("GAN/Distiller", reuse=reuse):
+    concat_axis = 3
 
-        x = strided_conv_block(input, features1, 1, 1)
-        x = strided_conv_block(x, features2, 2, 1)
-        x2 = x
-        x = strided_conv_block(input, features3, 2, 1)
-        x3 = x
-        x = strided_conv_block(input, features4, 2, 1)
-        x4 = x
-        x = strided_conv_block(input, features5, 2, 1)
-        x5 = x
-        x = strided_conv_block(input, features6, 2, 1)
+    with tf.variable_scope("GAN/"+name, reuse=reuse):
 
-        x = strided_conv_block(input, features6, 1, 1)
+        with tf.variable_scope("main", reuse=reuse):
 
-        x = deconv_block(x, features5)
-        x += x5
-        x = deconv_block(x, features4)
-        x += x4
-        x = deconv_block(x, features3)
-        x += x3
-        x = deconv_block(x, features2)
-        x += x2
-        x = deconv_block(x, features1)
+            x = strided_conv_block(input, features1, 2, 1, kernel_size=4) # 512
+            x1 = x
+            x = strided_conv_block(x, features2, 2, 1, kernel_size=4)
+            x2 = x
+            x = strided_conv_block(x, features3, 2, 1, kernel_size=4) #128
+            x3 = x
+            x = strided_conv_block(x, features4, 2, 1, kernel_size=4)
+            x4 = x
+            x = strided_conv_block(x, features5, 2, 1, kernel_size=4) #32
+            x5 = x
 
-        x = strided_conv_block(x, features1, 1, 1)
+            x = strided_conv_block(x, features6, 2, 1, kernel_size=4) 
+            x6 = x
+            x = strided_conv_block(x, features6, 2, 1, kernel_size=4) #8
+            x7 = x
+            x = strided_conv_block(x, features6, 2, 1, kernel_size=4)
+            x8 = x
+
+            x = strided_conv_block(x, features6, 2, 1, kernel_size=4)
+
+            x = deconv_block(x, features6)
+            x = tf.concat([x, x8], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features6)
+            x = tf.concat([x, x7], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features6)
+            x = tf.concat([x, x6], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features6)
+
+            x = tf.concat([x, x5], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features5)
+            x = tf.concat([x, x4], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features4)
+            x = tf.concat([x, x3], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features3)
+            x = tf.concat([x, x2], axis=concat_axis, kernel_size=4)
+            x = deconv_block(x, features2)
+            x = tf.concat([x, x1], axis=concat_axis, kernel_size=4)
+
+        with tf.variable_scope("end", reuse=reuse):
+            x = deconv_block(x, features1)
 
         x = slim.conv2d(
                 inputs=x,
@@ -865,18 +899,37 @@ def distiller(input, reuse=False):
 
     return x
 
+
 def generator(input, reuse=False, name="Gen1"):
+
+    features1 = 32
+    features2 = 64
+    features3 = 128
+    features4 = 256
 
     with tf.variable_scope("GAN/"+name, reuse=reuse):
 
-        x = strided_conv_block(input, features1, 1, 1)
-        x = strided_conv_block(x, features2, 2, 1)
-        x0 = x
-        x = strided_conv_block(x, features2, 1, 1)
-        x = strided_conv_block(x, features2, 1, 1)
-        x += x0
+        x = strided_conv_block(input, features1, 2, 1, kernel_size=3) # 512
+
+        x1 = x
+        x = strided_conv_block(x, features2, 2, 1, kernel_size=3)
+        x2 = x
+        x = strided_conv_block(x, features3, 2, 1, kernel_size=3) #128
+        x3 = x
+        x = strided_conv_block(x, features4, 2, 1, kernel_size=3)
+        x4 = x
+
+        x = strided_conv_block(x, features4, 2, 1, kernel_size=3)
+
+        x = deconv_block(x, features4)
+        x = tf.concat([x, x4], axis=concat_axis, kernel_size=3)
+        x = deconv_block(x, features4)
+        x = tf.concat([x, x3], axis=concat_axis, kernel_size=3)
+        x = deconv_block(x, features3)
+        x = tf.concat([x, x2], axis=concat_axis, kernel_size=3)
+        x = deconv_block(x, features2)
+        x = tf.concat([x, x1], axis=concat_axis, kernel_size=3)
         x = deconv_block(x, features1)
-        x = strided_conv_block(x, features2, 1, 1)
 
         x = slim.conv2d(
                 inputs=x,
@@ -890,14 +943,23 @@ def generator(input, reuse=False, name="Gen1"):
     return x
 
 def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_discr2_ph, 
-               lr_distiller_ph, lr_confuser_ph, flip_prob_fake_ph, flip_prob_real_ph,
-               adapt_rate1_ph, adapt_rate2_ph, confusion_rate_ph, super_confusion_rate_ph):
+               lr_distiller_ph, lr_confuser_ph, flip_fake1_ph, flip_real1_ph,
+               flip_fake2_ph, flip_real2_ph, sc_grad_mean_ph, c_grad_mean_ph,
+               sc_grad_beta_ph, c_grad_beta_ph, gan1_grad_mean_ph, gan2_grad_mean_ph,
+               confuser_grad_mean_ph, gan1_grad_beta_ph, gan2_grad_beta_ph,
+               confuser_grad_beta_ph, entropy_term1_ph, entropy_term2_ph,
+               beta1_distiller_ph, beta1_gen1_ph, beta1_gen2_ph, beta1_discr1_ph, 
+               beta1_discr2_ph, beta1_confuser_ph, beta1_super_confuser_ph,
+               adapt_rate1_ph, adapt_rate2_ph, adapt_confusion_ph, entropy_confusion_ph):
 
-    manifold = tf.reshape(manifold, [-1, cropsize, cropsize, channels])
+    eps = 1.e-8
 
-    #Networking
-    distillation1 = distiller(manifold1, reuse=False)
-    distillation2 = distiller(manifold2, reuse=True)
+    manifold1 = tf.reshape(manifold1, [-1, cropsize, cropsize, channels])
+    manifold2 = tf.reshape(manifold2, [-1, cropsize, cropsize, channels])
+
+    ##Networking
+    distillation1 = distiller(manifold1, reuse=False, name="Distiller")
+    distillation2 = distiller(manifold2, reuse=True, name="Distiller")
 
     gen1 = generator(distillation1, reuse=False, name="Gen1")
     gen2 = generator(distillation2, reuse=False, name="Gen2")
@@ -935,8 +997,6 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
     _, confused_fake2 = confuser(distillation2, reuse=True)
     partway_real2, confused_real2 = confuser(manifold2, reuse=True)
 
-    super_confuser_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/SuperConfuser")
-
     super_confused1 = super_confuser(partway_real1, reuse=False)
     super_confused2 = super_confuser(partway_real2, reuse=True)
 
@@ -945,13 +1005,26 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
 
     super_confused1_loss = tf.losses.mean_squared_error(super_confused1, distillation1_mini)
     super_confused2_loss = tf.losses.mean_squared_error(super_confused2, distillation2_mini)
+
+    ##Losses
+    distiller_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller/main")
+    distiller_params_end = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller1/end")
+
+    confuser_end_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Confuser/end")
+    confuser_mid_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Confuser/mid")
+    confuser_start_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Confuser/start")
+
+    super_confuser_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/SuperConfuser")
     
-    super_confused_decay = 5.e-5 * tf.add_n( [tf.nn.l2_loss(v) for v in super_confuser_params] )
+    gen1_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Gen1")
+    gen2_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Gen2")
 
-    super_confuser_sum_mse = super_confused1_loss + super_confused2_loss
-    super_confused_loss = super_confusion_sum_mse + super_confused_decay
+    discr1_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Discr1")
+    discr2_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Discr2")
 
-    #Losses
+    super_confused_loss = super_confused1_loss + super_confused2_loss
+
+    #Natural statistics
     natural_stat_losses1 = []
     for i in range(1, len(discr_fake1)):
         natural_stat_losses1.append(
@@ -970,38 +1043,38 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
 
     weight_natural_stats = 10.
 
-    gen1_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Gen1")
-    gen2_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Gen2")
+    #Relativistic generation
+    x1 = pred_fake1[0] - pred_real1[0]
+    rel_pred1 = tf.cond(x1[0] < 0., lambda: 0.5*x1**2+x1+0.5, lambda: -0.5*x1**2+x1+0.5)
+    x2 = pred_fake2[0] - pred_real2[0]
+    rel_pred2 = tf.cond(x2[0] < 0., lambda: 0.5*x2**2+x2+0.5, lambda: -0.5*x2**2+x2+0.5)
 
-    gen1_pred_loss = -tf.log(tf.clip_by_value(pred_fake1, 1.e-8, 1.))
-    gen2_pred_loss = -tf.log(tf.clip_by_value(pred_fake2, 1.e-8, 1.))
+    gen1_pred_loss = -tf.log(tf.clip_by_value(rel_pred1, 1.e-8, 1.))
+    gen2_pred_loss = -tf.log(tf.clip_by_value(rel_pred2, 1.e-8, 1.))
 
     gen1_loss = gen1_pred_loss + weight_natural_stats*natural_stat_loss1
     gen2_loss = gen2_pred_loss + weight_natural_stats*natural_stat_loss2
 
-    flip_fake1 = tf.random_uniform((1,)) > flip_prob_fake1_ph
-    fake_label1 = tf.cond(flip_fake1[0],
-                         lambda: 0.,
-                         lambda: tf.random_uniform((1,), minval=0.9, maxval=1.))
+    #Flipping phs are False for flip; True otherwise
+    fake_label1 = tf.cond(flip_fake1_ph,
+                          lambda: 0.,
+                          lambda: 1.)
 
-    real_label1 = tf.cond(tf.random_uniform((1,)) > flip_prob_real1_ph,
+    real_label1 = tf.cond(flip_real1_ph,
                           lambda: tf.random_uniform((1,), minval=0.9, maxval=1.),
                           lambda: 0.)
 
-    flip_fake2 = tf.random_uniform((1,)) > flip_prob_fake2_ph
-    fake_label2 = tf.cond(flip_fake2[0],
-                         lambda: 0.,
-                         lambda: tf.random_uniform((1,), minval=0.9, maxval=1.))
+    fake_label2 = tf.cond(flip_fake2_ph,
+                          lambda: 0.,
+                          lambda: 1.)
 
-    real_label2 = tf.cond(tf.random_uniform((1,)) > flip_prob_real2_ph,
+    real_label2 = tf.cond(flip_real2_ph,
                           lambda: tf.random_uniform((1,), minval=0.9, maxval=1.),
                           lambda: 0.)
 
-    discr1_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Discr1")
-    discr2_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Discr2")
-
-    discr1_decay = 5.e-5 * tf.add_n( [tf.nn.l2_loss(v) for v in discr1_params] )
-    discr2_decay = 5.e-5 * tf.add_n( [tf.nn.l2_loss(v) for v in discr2_params] )
+    #Discriminator training
+    discr1_decay = 1.e-5 * tf.add_n( [tf.nn.l2_loss(v) for v in discr1_params] )
+    discr2_decay = 1.e-5 * tf.add_n( [tf.nn.l2_loss(v) for v in discr2_params] )
 
     discr_fake1_loss = -tf.log(1.-tf.clip_by_value(tf.abs(pred_fake1-fake_label1), 0., 1.-1.e-8))
     discr_real1_loss = -tf.log(1.-tf.clip_by_value(tf.abs(pred_real1-real_label1), 0., 1.-1.e-8))
@@ -1009,24 +1082,31 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
     discr_fake2_loss = -tf.log(1.-tf.clip_by_value(tf.abs(pred_fake2-fake_label2), 0., 1.-1.e-8))
     discr_real2_loss = -tf.log(1.-tf.clip_by_value(tf.abs(pred_real2-real_label2), 0., 1.-1.e-8))
 
-    discr_fake1_loss += discr1_decay
-    discr_real1_loss += discr1_decay
-
-    discr_real2_loss += discr2_decay
-    discr_real2_loss += discr2_decay
-
     #Adapt discriminator learning rates to generator performances
-    discr_fake1_loss *= tf.cond(flip_fake1[0], 
-                                lambda: adapt_rate1_ph, lambda: np.array([1.], dtype=np.float32))
+    discr_fake1_adapt = tf.cond(flip_fake1_ph, 
+                                lambda: adapt_rate1_ph, 
+                                lambda: np.array([1.], dtype=np.float32))
 
-    discr_fake2_loss *= tf.cond(flip_fake2[0], 
-                                lambda: adapt_rate2_ph, lambda: np.array([1.], dtype=np.float32))
+    discr_real1_adapt = tf.cond(flip_real1_ph, 
+                                lambda: adapt_rate1_ph, 
+                                lambda: np.array([1.], dtype=np.float32))
+
+    discr_fake2_adapt = tf.cond(flip_fake2_ph, 
+                                lambda: adapt_rate2_ph, 
+                                lambda: np.array([1.], dtype=np.float32))
+
+    discr_real2_adapt = tf.cond(flip_real2_ph, 
+                                lambda: adapt_rate2_ph, 
+                                lambda: np.array([1.], dtype=np.float32))
+
+    discr1_loss = (discr_fake1_adapt*discr_fake1_loss + discr_real1_adapt*discr_real1_loss + 
+                   discr1_decay + entropy_term1_ph)
+    discr2_loss = (discr_fake2_adapt*discr_fake2_loss + discr_real2_adapt*discr_real2_loss + 
+                   discr2_decay + entropy_term2_ph)
 
     confused1_label = np.array([0.], dtype=np.float32)
     confused2_label = np.array([1.], dtype=np.float32)
     midway = 0.5*(confused1_label+confused2_label)
-
-    confuser_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Confuser")
 
     confuser_fake1_loss = -tf.log(1.-tf.clip_by_value(tf.abs(confused_fake1-confused1_label), 0., 1.-1.e-8))
     confuser_real1_loss = -tf.log(1.-tf.clip_by_value(tf.abs(confused_real1-confused1_label), 0., 1.-1.e-8))
@@ -1034,31 +1114,121 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
     confuser_fake2_loss = -tf.log(1.-tf.clip_by_value(tf.abs(confused_fake2-confused2_label), 0., 1.-1.e-8))
     confuser_real2_loss = -tf.log(1.-tf.clip_by_value(tf.abs(confused_real2-confused2_label), 0., 1.-1.e-8))
 
-    confuser_loss = ( (confuser_real1_loss + confuser_real2_loss) / 
-                      (super_confusion_rate_ph*super_confuser_sum_mse + 1.e-8) )
+    confuser_loss = confuser_real1_loss + confuser_real2_loss
 
-    distiller_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller")
-
+    #TODO: These need to be replaced with grad manipulations
     distillation1_loss = -tf.log(tf.clip_by_value(tf.abs(confused_fake1-midway), 1.e-8, 1.))
     distillation2_loss = -tf.log(tf.clip_by_value(tf.abs(confused_fake2-midway), 1.e-8, 1.))
     distillation_loss = confusion_rate_ph*(distillation1_loss+distillation2_loss) + gen1_loss+gen2_loss
 
-    #Training operations with weight normalization
-    train_op_gen1 = adam_updates(gen1_params, gan_loss, lr=lr_gen_ph, clip_norm=40)
-    train_op_gen2 = adam_updates(gen2_params, gan_loss, lr=lr_gen_ph, clip_norm=40)
+    ##Training operations with gradient balancing
 
-    train_op_distiller = adam_updates(distiller_params, distillation_loss, lr=lr_distiller_ph, clip_norm=40)
+    #Gradients back to middle of confuser
+    super_confuser_to_mid = super_confuser_params+confuser_params_mid
+    super_confuser_grads = tf.gradients(super_confused_loss, super_confuser_to_mid)
+    confuser_to_mid = confuser_params_end+confuser_params_mid
+    confuser_grads = tf.gradients(confuser_loss, confuser_to_mid)
 
-    train_op_discr1 = adam_updates(discr1_params, discr_fake1_loss+discr_real1_loss, lr=lr_discr1_ph, clip_norm=15)
-    train_op_discr2 = adam_updates(discr2_params, discr_fake2_loss+discr_real2_loss, lr=lr_discr2_ph, clip_norm=15)
+    #Get middle tensor that balanced gradients go through
+    idx_super_confuser_mid = []
+    for i, v in enumerate(super_confuser_grads):
+        if 'mid' in v.name:
+            idx_super_confuser_mid.append(i)
 
-    train_op_confuser = adam_updates(confuser_params, confuser_loss, lr=lr_confuser_ph, clip_norm=15)
+    idx_confuser_mid = []
+    for i, v in enumerate(confuser_grads):
+        if 'mid' in v.name:
+            idx_confuser_mid.append(i)
 
-    train_op_super_confuser = adam_updates(super_confuser_params, super_confused_loss, lr=lr_super_confuser_ph, clip_norm=40)
+    #Get the confuser gradients
+    sc_grad_mean = []
+    c_grad_mean = []
+    num_mid_grads = len(idx_super_confuser_mid)
+    for i in range(num_mid_grads):
+        sc_grad_mean.append(sc_grad_beta_ph*sc_grad_mean_ph[i] + 
+                           (1-sc_grad_beta_ph)*tf.reduce_mean(tf.abs(
+                               super_confuser_grads[idx_super_confuser_mid[i]])))
+        c_grad_mean.append(c_grad_beta_ph*c_grad_mean_ph[i] + 
+                           (1-c_grad_beta_ph)*tf.reduce_mean(tf.abs(
+                               confuser_grads[idx_confuser_mid[i]])))
 
-    return (distillation1, distillation2, gen1, gen2, pred_fake1, pred_real1, pred_fake2, 
-            pred_real2, confuser_real1, confuser_real2, confused_fake2, confused_real2,
-            train_op_gen1, train_op_discr1, train_op_discr2, train_op_distiller, train_op_confuser)
+    #Balance confuser gradents
+    mid_grads = []
+    for i in num_mid_grads:
+        geometric_mean = tf.sqrt(sc_grad_mean[i]*c_grad_mean[i])
+
+        mid_grad = (confuser_grads[i] - 
+                    c_grad_mean[i] * super_confuser_grads[i] / (sc_grad_mean[i]+eps) )
+
+        mid_grads.append(mid_grad)
+
+    confuser_grads_start = tf.gradients(confuser_params_mid, 
+                                        confuser_params_start,
+                                        grad_ys=mid_grads)
+
+    #Get the distiller gradients
+    distiller_gan1_grads_end = tf.gradients(distiller_params_end, natural_stat_losses1)
+    distiller_gan2_grads_end = tf.gradients(distiller_params_end, natural_stat_losses2)
+    confuser_grads_end = tf.gradients(distiller_params_end, natural_stat_losses2)
+    
+    gan1_grad_mean = []
+    gan2_grad_mean = []
+    confuser_grad_mean = []
+    distiller_num_mid_grads = len(distiller_gan1_grads_end)
+    for i in range(num_mid_grads):
+        gan1_grad_mean.append(gan1_grad_beta_ph*gan1_grad_mean_ph[i] + 
+                              (1-gan1_grad_beta_ph)*tf.reduce_mean(tf.abs(
+                              distiller_gan1_grads_end[i])))
+        gan2_grad_mean.append(gan2_grad_beta_ph*gan2_grad_mean_ph[i] + 
+                              (1-gan2_grad_beta_ph)*tf.reduce_mean(tf.abs(
+                              distiller_gan2_grads_end[i])))
+        confuser_grad_mean.append(confuser_grad_beta_ph*confuser_grad_mean_ph[i] + 
+                                  (1-confuser_grad_beta_ph)*tf.reduce_mean(tf.abs(
+                                  confuser_grads_end[i])))
+
+    #Balance distiller gradients (from GANs and confuser)
+    distiller_mid_grads = []
+    for i in num_mid_grads:
+        #gan_average = 0.5 * ( gan1_grad_mean[i] + gran2_grad_mean[i] )
+        #geometric_mean = tf.sqrt( confuser_grad_mean[i] * gan_average )
+
+        mid_grad = ( confuser_grad_mean[i] * distiller_gan1_grads_end[i] / (gan1_grad_mean[i]+eps) +
+                     confuser_grad_mean[i] * distiller_gan2_grads_end[i] / (gan2_grad_mean[i]+eps) - 
+                     confuser_grads_end[i] )
+
+        distiller_mid_grads.append(mid_grad)
+
+    distiller_grads = tf.gradients(distiller_end,
+                                   distiller_params,
+                                   grad_ys=distiller_mid_grads)
+
+    optimizer_confuser = tf.train.AdamOptimizer(learning_rate=lr_confuser_ph, beta1=beta1_confuser_ph)
+    train_op_confuser = optimizer_confuser.apply_gradients(confuser_grads)
+
+    #train_op_confuser = adam_updates(confuser_params_start+confuser_params_mid+
+    #                                       confuser_params_end, confuser_grads_start+
+    #                                       confuser_grads_mid+confuser_grads_end, 
+    #                                       lr=lr_confuser_ph)
+
+    train_op_super_confuser = adam_updates(super_confuser_params, super_confuser_grads, 
+                                           lr=lr_super_confuser_ph, beta1=beta1_super_confuser_ph)
+
+    train_op_gen1 = adam_updates(gen1_params, gen1_loss, lr=lr_gen1_ph, beta1=beta1_gen1_ph)
+    train_op_gen2 = adam_updates(gen2_params, gen2_loss, lr=lr_gen2_ph, beta1=beta1_gen2_ph)
+
+    optimizer_distiller = tf.train.AdamOptimizer(learning_rate=lr_distiller_ph, beta1=beta1_distiller_ph)
+    train_op_distiller = optimizer_distiller.apply_gradients(distiller_grads)
+
+    optimizer_discr1 = tf.train.AdamOptimizer(learning_rate=lr_discr1_ph, beta1=beta1_discr1_ph)
+    train_op_discr1 = optimizer_discr1.minimize(discr1_loss, var_list=discr1_params)
+    optimizer_discr2 = tf.train.AdamOptimizer(learning_rate=lr_discr2_ph, beta1=beta1_discr2_ph)
+    train_op_discr2 = optimizer_discr2.minimize(discr2_loss, var_list=discr2_params)
+
+    return {'distillations': [distillation1, distillation2], 'gens': [gen1, gen2],
+            'discr_preds': [pred_fake1, pred_real1, pred_fake2, pred_real2], 
+            'confuser_preds': [confuser_real1, confuser_real2, confused_fake2, confused_real2],
+            'train_ops': [train_op_gen1, train_op_gen2, train_op_discr1, train_op_discr2, train_op_distiller, 
+                          train_op_confuser, train_op_super_confuser]}
 
 
 def flip_rotate(img):
@@ -1229,7 +1399,7 @@ def main():
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS) #For batch normalisation windows
             with tf.control_dependencies(update_ops):
 
-                # Session configuration.
+                #Session configuration.
                 log_device_placement = False #Once placement is correct, this fills up too much of the cmd window...
                 sess_config = tf.ConfigProto(
                     allow_soft_placement=True,
@@ -1240,8 +1410,8 @@ def main():
                 config = RunConfig(
                     session_config=sess_config, model_dir=model_dir)
 
-                img = input_fn(data_dir, 'train', batch_size, num_gpus)
-                img_val = input_fn(data_dir, 'val', batch_size, num_gpus)
+                img1 = input_fn(data_dir1, '', batch_size, num_gpus)
+                img2 = input_fn(data_dir2, '', batch_size, num_gpus)
 
                 with tf.Session(config=sess_config) as sess:
 
@@ -1257,26 +1427,61 @@ def main():
 
                     is_training = True
 
-                    adapt_rate_ph = tf.placeholder(tf.float32, shape=(1,), name='adapt')
-                    batch_norm_on_ph = tf.placeholder(tf.bool, name='train_batch_norm')
+                    adapt_rate1_ph = tf.placeholder(tf.float32, name='adapt_rate1')
+                    adapt_rate2_ph = tf.placeholder(tf.float32, name='adapt_rate2')
+                    adapt_confusion_ph = tf.placeholder(tf.float32, name='adapt_confusion')
 
-                    lr_gen_ph, lr_discr_ph = [tf.placeholder(tf.float32) for _ in range(2)]
-                    flip_prob_fake_ph, flip_prob_real_ph = [tf.placeholder(tf.float32) for _ in range(2)]
+                    #Learning rates
+                    lr_gen1_ph, lr_discr1_ph, lr_gen2_ph, lr_discr2_ph, lr_confuser_ph, lr_super_confuser_ph = [
+                        tf.placeholder(tf.float32) for _ in range(6)]
 
-                    distillation1, distillation2, gen1, gen2, pred_fake1, pred_real1, pred_fake2, \
-                    pred_real2, confused_fake1, confused_real1, confused_fake2, confused_real2, \
-                    train_op_gen1, train_op_discr1, train_op_discr2, train_op_distiller, train_op_confuser = experiment(
+                    flip_fake1_ph, flip_real1_ph, flip_fake2_ph, flip_real2_ph, flip_confuser_ph = [
+                        tf.placeholder(tf.float32) for _ in range(5)]
+
+                    #Mid confuser gradient balancing
+                    sc_grad_mean_ph = tf.placeholder(tf.float32, name='sc_grad_mean')
+                    c_grad_mean_ph = tf.placeholder(tf.float32, name='c_grad_mean')
+                    sc_grad_beta_ph = tf.placeholder(tf.float32, name='sc_grad_beta')
+                    c_grad_beta_ph = tf.placeholder(tf.float32, name='c_grad_beta')
+
+                    #To distiller gradient balancing
+                    gan1_grad_mean_ph = tf.placeholder(tf.float32, name='gan1_grad_mean')
+                    gan2_grad_mean_ph = tf.placeholder(tf.float32, name='gan2_grad_mean')
+                    gan1_grad_beta_ph = tf.placeholder(tf.float32, name='gan1_grad_beta')
+                    gan2_grad_beta_ph = tf.placeholder(tf.float32, name='gan2_grad_beta')
+                    confuser_grad_mean_ph = tf.placeholder(tf.float32, name='confuser_grad_mean')
+                    confuser_grad_beta_ph = tf.placeholder(tf.float32, name='confuser_grad_beta')
+
+                    entropy_term1_ph = tf.placeholder(tf.float32, name='entropy_term1')
+                    entropy_term2_ph = tf.placeholder(tf.float32, name='entropy_term2')
+                    entropy_confusion_ph = tf.placeholder(tf.float32, name='entropy_confusion')
+
+                    #ADAM beta1
+                    beta1_distiller_ph = tf.placeholder(tf.float32, shape=(), 
+                                                        name='beta1_distiller')
+                    beta1_gen1_ph = tf.placeholder(tf.float32, shape=(), 
+                                                   name='beta1_gen1')
+                    beta1_gen2_ph = tf.placeholder(tf.float32, shape=(), 
+                                                   name='beta1_gen2')
+                    beta1_discr1_ph = tf.placeholder(tf.float32, shape=(), 
+                                                     name='beta1_discr1')
+                    beta1_discr2_ph = tf.placeholder(tf.float32, shape=(), 
+                                                     name='beta1_discr2')
+                    beta1_confuser_ph = tf.placeholder(tf.float32, shape=(), 
+                                                       name='beta1_confuser')
+                    beta1_super_confuser_ph = tf.placeholder(tf.float32, shape=(), 
+                                                             name='beta1_super_confuser')
+
+                    exp_dict = experiment(
                         manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_discr2_ph, 
-                        lr_distiller_ph, lr_confuser_ph, flip_prob_fake_ph, flip_prob_real_ph,
-                        adapt_rate1_ph, adapt_rate2_ph, confusion_rate_ph)
-
-                    separate_train_ops = [train_op_gen1, train_op_discr1, train_op_discr2, train_op_distiller]
-                    joint_train_ops = separate_train_ops + [train_op_confuser]
-
-                    preds = [pred_fake1, pred_real1, pred_fake2, pred_real2, 
-                             confused_fake1, confused_real1, confused_fake2, confused_real2]
-
-                    output_ops = [distillation1, distillation2, gen1, gen2]
+                        lr_distiller_ph, lr_confuser_ph, flip_fake1_ph, flip_real1_ph,
+                        flip_fake2_ph, flip_real2_ph, sc_grad_mean_ph, c_grad_mean_ph,
+                        sc_grad_beta_ph, c_grad_beta_ph, gan1_grad_mean_ph, gan2_grad_mean_ph,
+                        confuser_grad_mean_ph, gan1_grad_beta_ph, gan2_grad_beta_ph,
+                        confuser_grad_beta_ph, entropy_term1_ph, entropy_term2_ph,
+                        beta1_distiller_ph, beta1_gen1_ph, beta1_gen2_ph, beta1_discr1_ph, 
+                        beta1_discr2_ph, beta1_confuser_ph, beta1_super_confuser_ph,
+                        adapt_rate1_ph, adapt_rate2_ph, adapt_confusion_ph, entropy_confusion_ph)
 
                     #########################################################################################
 
@@ -1287,13 +1492,29 @@ def main():
                     saver = tf.train.Saver()
                     #saver.restore(sess, tf.train.latest_checkpoint(model_dir+"model/"))
 
+                    #Store hard examples in a buffer for reuse
+                    buffer1_size = 10
+                    buffer1_difficulty = 0.
+                    hard_buffer1 = [2*np.random.rand(cropsize, cropsize, 1)-1 for _ in range(buffer1_size)]
+                    buffer2_size = 10
+                    buffer2_difficulty = 0.
+                    hard_buffer2 = [2*np.random.rand(cropsize, cropsize, 1)-1 for _ in range(buffer2_size)]
 
-                    pred_avg_d1 = 0.5
-                    pred_avg_d2 = 0.5
+                    avg_p_real1 = 0.5
+                    avg_p_fake1 = 0.5
+                    avg_p_real2 = 0.5
+                    avg_p_fake2 = 0.5
 
                     counter = 0
                     save_counter = counter
                     counter_init = counter+1
+                    max_counter = 1000000
+                    flip_base = 0.01
+
+                    b = 0.997
+
+                    use_buffer1_prob = use_buffer2_prob = 0.1
+
                     while True:
                         #Train for a couple of hours
                         time0 = time.time()
@@ -1303,24 +1524,76 @@ def main():
                         lr_gen = lr_discr = learning_rate
                         base_dict = { lr_gen_ph: lr_gen, lr_discr_ph: lr_discr }
 
-                        batch_norm_is_on = True
-
                         while time.time()-time0 < modelSavePeriod:
                             counter += 1
 
-                            _img = sess.run(img[0])
+                            fake_actv1 = np.float32(flip_base/(avg_p_fake1+0.001))*(1-counter/max_counter)**2
+                            flip_fake1 = np.random.rand() > fake_actv1
+                            real_actv1 = np.float32(flip_base/(1.-avg_p_real1+0.001))*(1-counter/max_counter)**2
+                            flip_real1 = np.random.rand() > real_actv1
 
-                            if pred_avg < 0.4:
-                                adaption = 0.
+                            fake_actv2 = np.float32(flip_base/(avg_p_fake2+0.001))*(1-counter/max_counter)**2
+                            flip_fake2 = np.random.rand() > fake_actv2
+                            real_actv2 = np.float32(flip_base/(1.-avg_p_real2+0.001))*(1-counter/max_counter)**2
+                            flip_real2 = np.random.rand() > real_actv2
+
+                            adapt1 = 4.*avg_p_fake1*(1.-avg_p_real1)
+                            adapt2 = 4.*avg_p_fake2*(1.-avg_p_real2)
+
+                            beta1 = -1
+
+                            confuser_bal_beta = 0.997
+                            gen1_bal_beta = 0.997
+                            gen2_bal_beta = 0.997
+
+                            discr1_beta1 = discr2_beta1 = gen1_beta1 = gen2_beta1 = \
+                                confuser_beta1 = super_confuser_beta1 = beta1
+
+                            if np.random.rand() < use_buffer1_prob:
+                                _img1 = buffer1[np.random.randint(0, buffer1_size)]
                             else:
-                                adaption = 10*(adaption-0.4)
+                                _img1 = sess.run(img1[0])
+                            if np.random.rand() < use_buffer2_prob:
+                                _img2 = buffer2[np.random.randint(0, buffer2_size)]
+                            else:
+                                _img2 = sess.run(img2[0])
 
-                            adaption = (10*np.exp(-pred_avg)*(1-np.exp(-pred_avg**2)))**3
-
-                            feed_dict = base_dict.copy()
-                            feed_dict.update({flip_prob_fake_ph: pred_avg_d1, flip_prob_real_ph: pred_avg_d2,
-                                                img_ph[0]: _img,
-                                                batch_norm_on_ph: batch_norm_is_on, adapt_rate_ph: adaption})
+                            feed_dict = {lr_gen1_ph: np.array([lr_gen1]),
+                                         lr_gen2_ph: np.array([lr_gen2]),
+                                         lr_discr1_ph: np.array([lr_discr1]),
+                                         lr_discr2_ph: np.array([lr_discr2]),
+                                         lr_confuser_ph: np.array([lr_confuser]),
+                                         lr_super_confuser_ph: np.array([lr_super_confuser]),
+                                         flip_fake1_ph: np.bool(flip_fake1),
+                                         flip_real1_ph: np.bool(flip_real1),
+                                         flip_fake2_ph: np.bool(flip_fake2),
+                                         flip_real2_ph: np.bool(flip_real2),
+                                         flip_confuser_ph: np.bool(flip_confuser),
+                                         adapt_rate1_ph: np.float32(adapt1),
+                                         adapt_rate2_ph: np.float32(adapt2),
+                                         adapt_confusion_ph: np.float32(adapt_confusion),
+                                         entropy_term1_ph: np.float32(entropy_term1),
+                                         entropy_term2_ph: np.float32(entropy_term2),
+                                         entropy_confusion_ph: np.float32(entropy_confusion),
+                                         sc_grad_mean_ph: np.float32(sc_grad_mean),
+                                         c_grad_mean_ph: np.float32(c_grad_mean),
+                                         sc_grad_beta_ph: np.float32(sc_grad_beta),
+                                         c_grad_beta_ph: np.float32(c_grad_beta),
+                                         gan1_grad_mean_ph: np.float32(gan1_grad_mean),
+                                         gan2_grad_mean_ph: np.float32(gan2_grad_mean),
+                                         gan1_grad_beta_ph: np.float32(gan1_grad_beta),
+                                         gan2_grad_beta_ph: np.float32(gan2_grad_beta),
+                                         confuser_grad_mean_ph: np.float32(confuser_grad_mean),
+                                         confuser_grad_beta_ph: np.float32(confuser_grad_beta),
+                                         beta1_distiller_ph: np.float32(beta1_distiller),
+                                         beta1_gen1_ph: np.float32(beta1_gen1),
+                                         beta1_gen2_ph: np.float32(beta1_gen2),
+                                         beta1_discr1_ph: np.float32(beta1_discr1),
+                                         beta1_discr2_ph: np.float32(beta1_discr2),
+                                         beta1_confuser_ph: np.float32(beta1_confuser),
+                                         beta1_super_confuser_ph: np.float32(beta1_super_confuser),
+                                         img1_ph[0]: _img1,
+                                         img2_ph[0]: _img2}
 
                             if counter <= 1 or not counter % save_result_every_n_batches or (counter < 10000 and not counter % 1000) or counter == counter_init:
 
@@ -1337,8 +1610,10 @@ def main():
                             else:
                                 _, _, _, prediction_loss, prediction, prediction_real = sess.run( std_gan_ops, feed_dict=feed_dict )
 
-                            pred_avg_d1 = 0.99*pred_avg_df+0.01*prediction1
-                            pred_avg_d1 = 0.99*pred_avg_dr+0.01*prediction2
+                            avg_p_fake1 = b*avg_p_fake1 + (1.-b)*fake1_prob
+                            avg_p_real1 = b*avg_p_real1 + (1.-b)*real1_prob
+                            avg_p_fake2 = b*avg_p_fake2 + (1.-b)*fake2_prob
+                            avg_p_real2 = b*avg_p_real2 + (1.-b)*real2_prob
 
                             #Update save files
                             try:
