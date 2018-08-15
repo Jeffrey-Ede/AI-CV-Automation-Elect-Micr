@@ -777,13 +777,13 @@ def discriminator(input, reuse=False, name="Discr1"):
 
         with tf.variable_scope("small", reuse=reuse) as small_scope:
             small = inputs[0]
-            small = strided_conv_block(small, features1, 2, 1)
+            small = strided_conv_block(small, features1, 2, 1, kernel_size=4)
             layers.append(small)
-            small = strided_conv_block(small, features2, 2, 1)
+            small = strided_conv_block(small, features2, 2, 1, kernel_size=4)
             layers.append(small)
-            small = strided_conv_block(small, features3, 2, 1)
+            small = strided_conv_block(small, features3, 2, 1, kernel_size=4)
             layers.append(small)
-            small = strided_conv_block(small, features4, 2, 1)
+            small = strided_conv_block(small, features4, 2, 1, kernel_size=4)
             layers.append(small)
             #small = tf.reduce_mean(small, [1,2])
             small = tf.reshape(small, (-1, features5*16))
@@ -797,13 +797,13 @@ def discriminator(input, reuse=False, name="Discr1"):
             #                        [1, 2, 2, 1],
             #                        strides=[1, 2, 2, 1],
             #                        padding='SAME')
-            medium = strided_conv_block(medium, features1, 2, 1)
+            medium = strided_conv_block(medium, features1, 2, 1, kernel_size=4)
             layers.append(medium)
-            medium = strided_conv_block(medium, features2, 2, 1)
+            medium = strided_conv_block(medium, features2, 2, 1, kernel_size=4)
             layers.append(medium)
-            medium = strided_conv_block(medium, features3, 2, 1)
+            medium = strided_conv_block(medium, features3, 2, 1, kernel_size=4)
             layers.append(medium)
-            medium = strided_conv_block(medium, features4, 2, 1)
+            medium = strided_conv_block(medium, features4, 2, 1, kernel_size=4)
             layers.append(medium)
             #medium = tf.reduce_mean(medium, [1,2])
             medium = tf.reshape(medium, (-1, features5*16))
@@ -813,13 +813,13 @@ def discriminator(input, reuse=False, name="Discr1"):
 
         with tf.variable_scope("large", reuse=reuse) as large_scope:
             large = inputs[2]
-            large = strided_conv_block(large, features1, 2, 1)
+            large = strided_conv_block(large, features1, 2, 1, kernel_size=4)
             layers.append(large)
-            large = strided_conv_block(large, features2, 2, 1)
+            large = strided_conv_block(large, features2, 2, 1, kernel_size=4)
             layers.append(large)
-            large = strided_conv_block(large, features3, 2, 1)
+            large = strided_conv_block(large, features3, 2, 1, kernel_size=4)
             layers.append(large)
-            large = strided_conv_block(large, features4, 2, 1)
+            large = strided_conv_block(large, features4, 2, 1, kernel_size=4)
             layers.append(large)
             #large = tf.reduce_mean(large, [1,2])
             large = tf.reshape(large, (-1, features5*16))
@@ -944,7 +944,8 @@ def generator(input, reuse=False, name="Gen1"):
 
 def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_discr2_ph, 
                lr_distiller_ph, lr_confuser_ph, flip_fake1_ph, flip_real1_ph,
-               flip_fake2_ph, flip_real2_ph, sc_grad_mean_ph, c_grad_mean_ph,
+               flip_fake2_ph, flip_real2_ph, flip_confuser1_ph, flip_confuser2_ph, 
+               sc_grad_mean_ph, c_grad_mean_ph,
                sc_grad_beta_ph, c_grad_beta_ph, gan1_grad_mean_ph, gan2_grad_mean_ph,
                confuser_grad_mean_ph, gan1_grad_beta_ph, gan2_grad_beta_ph,
                confuser_grad_beta_ph, entropy_term1_ph, entropy_term2_ph,
@@ -958,8 +959,8 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
     manifold2 = tf.reshape(manifold2, [-1, cropsize, cropsize, channels])
 
     ##Networking
-    distillation1 = distiller(manifold1, reuse=False, name="Distiller")
-    distillation2 = distiller(manifold2, reuse=True, name="Distiller")
+    distillation1 = distiller(manifold1, reuse=False, name="Distiller1")
+    distillation2 = distiller(manifold2, reuse=False, name="Distiller2")
 
     gen1 = generator(distillation1, reuse=False, name="Gen1")
     gen2 = generator(distillation2, reuse=False, name="Gen2")
@@ -1007,8 +1008,11 @@ def experiment(manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_di
     super_confused2_loss = tf.losses.mean_squared_error(super_confused2, distillation2_mini)
 
     ##Losses
-    distiller_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller/main")
-    distiller_params_end = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller1/end")
+    distiller1_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller1/main")
+    distiller1_params_end = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller1/end")
+
+    distiller2_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller2/main")
+    distiller2_params_end = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Distiller2/end")
 
     confuser_end_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Confuser/end")
     confuser_mid_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="GAN/Confuser/mid")
@@ -1432,11 +1436,13 @@ def main():
                     adapt_confusion_ph = tf.placeholder(tf.float32, name='adapt_confusion')
 
                     #Learning rates
-                    lr_gen1_ph, lr_discr1_ph, lr_gen2_ph, lr_discr2_ph, lr_confuser_ph, lr_super_confuser_ph = [
+                    lr_gen1_ph, lr_discr1_ph, lr_gen2_ph, lr_discr2_ph, \
+                        lr_confuser_ph, lr_super_confuser_ph = [
                         tf.placeholder(tf.float32) for _ in range(6)]
 
-                    flip_fake1_ph, flip_real1_ph, flip_fake2_ph, flip_real2_ph, flip_confuser_ph = [
-                        tf.placeholder(tf.float32) for _ in range(5)]
+                    flip_fake1_ph, flip_real1_ph, flip_fake2_ph, flip_real2_ph, \
+                        flip_confuser1_ph, flip_confuser2_ph = [
+                        tf.placeholder(tf.float32) for _ in range(6)]
 
                     #Mid confuser gradient balancing
                     sc_grad_mean_ph = tf.placeholder(tf.float32, name='sc_grad_mean')
@@ -1475,7 +1481,8 @@ def main():
                     exp_dict = experiment(
                         manifold1, manifold2, lr_gen1_ph, lr_gen2_ph, lr_discr1_ph, lr_discr2_ph, 
                         lr_distiller_ph, lr_confuser_ph, flip_fake1_ph, flip_real1_ph,
-                        flip_fake2_ph, flip_real2_ph, sc_grad_mean_ph, c_grad_mean_ph,
+                        flip_fake2_ph, flip_real2_ph, flip_confuser1_ph, flip_confuser2_ph,
+                        sc_grad_mean_ph, c_grad_mean_ph,
                         sc_grad_beta_ph, c_grad_beta_ph, gan1_grad_mean_ph, gan2_grad_mean_ph,
                         confuser_grad_mean_ph, gan1_grad_beta_ph, gan2_grad_beta_ph,
                         confuser_grad_beta_ph, entropy_term1_ph, entropy_term2_ph,
@@ -1504,29 +1511,88 @@ def main():
                     avg_p_fake1 = 0.5
                     avg_p_real2 = 0.5
                     avg_p_fake2 = 0.5
+                    avg_p_1_confuser = 0.5
+                    avg_p_2_confuser = 0.5
+                    b = 0.99 #For prediction decaying avgs
+
+                    bad_buffer_size1 = 15
+                    bad_buffer_truth1 = [np.zeros((1, 1, cropsize, cropsize, 1)) for _ in range(bad_buffer_size)]
+                    bad_buffer1 = [gen_lq(img.reshape((cropsize, cropsize))).reshape((1, 1, cropsize, cropsize, 1)) 
+                                  for img in bad_buffer_truth]
+                    bad_buffer_prob1 = 0.1
+                    bad_buffer_beta1 = 0.999
+                    bad_buffer_thresh1 = 0.05
+                    bad_buffer_tracker1 = bad_buffer_prob
+                    bad_buffer_tracker_beta1 = 0.999
+
+                    bad_buffer_size2 = 15
+                    bad_buffer_truth2 = [np.zeros((1, 1, cropsize, cropsize, 1)) for _ in range(bad_buffer_size)]
+                    bad_buffer2 = [gen_lq(img.reshape((cropsize, cropsize))).reshape((1, 1, cropsize, cropsize, 1)) 
+                                   for img in bad_buffer_truth]
+                    bad_buffer_prob2 = 0.1
+                    bad_buffer_beta2 = 0.999
+                    bad_buffer_thresh2 = 0.05
+                    bad_buffer_tracker2 = bad_buffer_prob
+                    bad_buffer_tracker_beta2 = 0.999
+
+                    nat_stat1_mean_beta = 0.999
+                    nat_stat2_std_dev_beta1 = 0.999
+                    nat_stat_mean1 = 1.
+                    nat_stat2_mean1 = 4.
+
+                    nat_stat2_mean_beta = 0.999
+                    nat_stat2_std_dev_beta2 = 0.999
+                    nat_stat_mean2 = 1.
+                    nat_stat2_mean2 = 4.
+
+                    entropy1_bins = 100
+                    max_entropy1 = 0.0
+                    binned_preds1 = np.ones((entropy1_bins,), dtype=np.float32) / entropy1_bins
+                    entropy1_b = 0.99
+
+                    entropy2_bins = 100
+                    max_entropy2 = 0.0
+                    binned_preds2 = np.ones((entropy2_bins,), dtype=np.float32) / entropy2_bins
+                    entropy2_b = 0.99
+
+                    entropy_confuser_bins = 100
+                    max_entropy_confuser = 0.0
+                    binned_preds_confuser = np.ones((entropy_confuser_bins,), dtype=np.float32) / entropy_confuser_bins
+                    entropy_confuser_b = 0.99
+
+                    flip_base = 0.002
+                    base_rate = 0.0002
 
                     counter = 0
                     save_counter = counter
                     counter_init = counter+1
-                    max_counter = 1000000
-                    flip_base = 0.01
-
-                    b = 0.997
-
-                    use_buffer1_prob = use_buffer2_prob = 0.1
+                    max_counter = 20000000
 
                     while True:
                         #Train for a couple of hours
                         time0 = time.time()
 
-                        learning_rate = np.array([0.0002])
+                        if counter < max_counter/2:
+                            rate = base_rate
+                        elif counter > max_counter:
+                            saver.save(sess, save_path=model_dir+"model/", global_step=counter)
+                            quit()
+                        else:
+                            step = (counter-max_counter/2) // 50000 + 1
+                            max_step = (max_counter-max_counter/2) // 50000 + 1
+                            rate = base_rate*(1.-step/max_step)
 
-                        lr_gen = lr_discr = learning_rate
-                        base_dict = { lr_gen_ph: lr_gen, lr_discr_ph: lr_discr }
+                        lr = np.array([0.0002])
+
+                        lr_gen1 = lr_gen2 = lr_discr1 = lr_discr2 = lr_confuser = lr_super_confuser = lr
 
                         while time.time()-time0 < modelSavePeriod:
                             counter += 1
 
+                            linear_ramp = counter/max_counter
+                            quadratic_decay = (1-counter/max_counter)**2
+
+                            #Flipping
                             fake_actv1 = np.float32(flip_base/(avg_p_fake1+0.001))*(1-counter/max_counter)**2
                             flip_fake1 = np.random.rand() > fake_actv1
                             real_actv1 = np.float32(flip_base/(1.-avg_p_real1+0.001))*(1-counter/max_counter)**2
@@ -1537,24 +1603,51 @@ def main():
                             real_actv2 = np.float32(flip_base/(1.-avg_p_real2+0.001))*(1-counter/max_counter)**2
                             flip_real2 = np.random.rand() > real_actv2
 
-                            adapt1 = 4.*avg_p_fake1*(1.-avg_p_real1)
-                            adapt2 = 4.*avg_p_fake2*(1.-avg_p_real2)
+                            fake_actv_confuser1 = np.float32(flip_base/(avg_p_fake2+0.001))*(1-counter/max_counter)**2
+                            flip_confuser1 = np.random.rand() > fake_actv2
+                            real_actv_confuser2 = np.float32(flip_base/(1.-avg_p_real2+0.001))*(1-counter/max_counter)**2
+                            flip_confuser2 = np.random.rand() > real_actv2
 
-                            beta1 = -1
+                            #Adaption
+                            adapt1 = np.sqrt(4*avg_p_fake1*(1.-avg_p_real1)) * quadratic_decay + (1.-quadratic_decay)
+                            adapt2 = np.sqrt(4*avg_p_fake2*(1.-avg_p_real2)) * quadratic_decay + (1.-quadratic_decay)
+                            adapt_confuser = np.sqrt(4*avg_p_1_confuser*(1.-avg_p_2_confuser)) * \
+                                quadratic_decay + (1.-quadratic_decay)
+
+                            #Entropy
+                            freq = binned_preds1/np.sum(binned_preds1) + 1.e-8
+                            entropy = np.sum(-freq*np.log(freq))
+                            if entropy > max_entropy1:
+                                max_entropy1 = entropy
+                            entropy_term1 = (max_entropy1/entropy-1.)**2 * quadratic_decay
+
+                            freq = binned_preds2/np.sum(binned_preds2) + 1.e-8
+                            entropy = np.sum(-freq*np.log(freq))
+                            if entropy > max_entropy2:
+                                max_entropy2 = entropy
+                            entropy_term2 = (max_entropy2/entropy-1.)**2 * quadratic_decay
+
+                            freq = binned_preds_confuser/np.sum(binned_preds_confuser) + 1.e-8
+                            entropy = np.sum(-freq*np.log(freq))
+                            if entropy > max_entropy_confuser:
+                                max_entropy_confuser = entropy
+                            entropy_term_confuser = (max_entropy_confuser/entropy-1.)**2 * quadratic_decay
+
+                            beta1 = 0.9 if counter < max_counter/2 else 0.5
 
                             confuser_bal_beta = 0.997
                             gen1_bal_beta = 0.997
                             gen2_bal_beta = 0.997
 
-                            discr1_beta1 = discr2_beta1 = gen1_beta1 = gen2_beta1 = \
-                                confuser_beta1 = super_confuser_beta1 = beta1
+                            beta1_distiller = beta1_gen1 = beta1_gen2 = beta1_discr1 \
+                                = beta1_discr2 = beta1_confuser = beta1_super_confuser = beta1
 
-                            if np.random.rand() < use_buffer1_prob:
-                                _img1 = buffer1[np.random.randint(0, buffer1_size)]
+                            if np.random.rand() < bad_buffer_prob1:
+                                _img1 = bad_buffer1[np.random.randint(0, buffer_size1)]
                             else:
                                 _img1 = sess.run(img1[0])
-                            if np.random.rand() < use_buffer2_prob:
-                                _img2 = buffer2[np.random.randint(0, buffer2_size)]
+                            if np.random.rand() < bad_buffer_prob2:
+                                _img2 = bad_buffer2[np.random.randint(0, buffer_size2)]
                             else:
                                 _img2 = sess.run(img2[0])
 
@@ -1568,10 +1661,11 @@ def main():
                                          flip_real1_ph: np.bool(flip_real1),
                                          flip_fake2_ph: np.bool(flip_fake2),
                                          flip_real2_ph: np.bool(flip_real2),
-                                         flip_confuser_ph: np.bool(flip_confuser),
+                                         flip_confuser1_ph: np.bool(flip_confuser1),
+                                         flip_confuser2_ph: np.bool(flip_confuser2),
                                          adapt_rate1_ph: np.float32(adapt1),
                                          adapt_rate2_ph: np.float32(adapt2),
-                                         adapt_confusion_ph: np.float32(adapt_confusion),
+                                         adapt_confusion_ph: np.float32(adapt_confuser),
                                          entropy_term1_ph: np.float32(entropy_term1),
                                          entropy_term2_ph: np.float32(entropy_term2),
                                          entropy_confusion_ph: np.float32(entropy_confusion),
@@ -1608,12 +1702,72 @@ def main():
                                 except:
                                     print("Image save failed")
                             else:
-                                _, _, _, prediction_loss, prediction, prediction_real = sess.run( std_gan_ops, feed_dict=feed_dict )
+                                _, _, _, prediction_loss, prediction, prediction_real = sess.run( 
+                                    std_gan_ops, feed_dict=feed_dict )
+
+
+                            nat_stat_mean1 = (nat_stat1_mean_beta*nat_stat_mean1 + 
+                                             (1.-nat_stat1_mean_beta)*nat_stat1_loss)
+                            nat_stat_mean2 = (nat_stat2_mean_beta*nat_stat_mean2 + 
+                                             (1.-nat_stat2_mean_beta)*nat_stat2_loss)
+
+                            nat_stat2_mean1 = (nat_stat2_std_dev_beta1*nat_stat2_mean1 + 
+                                              (1.-nat_stat2_std_dev_beta1)*nat_stat2_loss**2)
+                            nat_stat2_mean2 = (nat_stat2_std_dev_beta2*nat_stat2_mean2 + 
+                                              (1.-nat_stat2_std_dev_beta2)*nat_stat2_loss**2)
+
+                            nat_stat_std_dev1 = np.sqrt(nat_stat2_mean1 - nat_stat_mean1**2)
+                            nat_stat_std_dev2 = np.sqrt(nat_stat2_mean2 - nat_stat_mean2**2)
 
                             avg_p_fake1 = b*avg_p_fake1 + (1.-b)*fake1_prob
                             avg_p_real1 = b*avg_p_real1 + (1.-b)*real1_prob
                             avg_p_fake2 = b*avg_p_fake2 + (1.-b)*fake2_prob
                             avg_p_real2 = b*avg_p_real2 + (1.-b)*real2_prob
+
+                            avg_p_1_confuser = b*avg_p_1_confuser + (1.-b)*confuser_1_prob
+                            avg_p_2_confuser = b*avg_p_2_confuser + (1.-b)*confuser_2_prob
+
+                            #Update entropy
+                            binned_preds1 = entropy1_b*binned_preds1
+                            idx1 = int(entropy1_bins*rel_prob1)
+                            binned_preds1[idx1] += (1.-entropy1_b)
+
+                            binned_preds2 = entropy2_b*binned_preds2
+                            idx2 = int(entropy2_bins*rel_prob2)
+                            binned_preds2[idx2] += (1.-entropy2_b)
+
+                            binned_preds_confuser = entropy_confuser_b*binned_preds_confuser
+                            idx_confuser = int(entropy_confuser_bins*rel_prob_confuser)
+                            binned_preds_confuser[idx_confuser] += (1.-entropy_confuser_b)
+
+                            #Decide whether or not to add using natural statistics
+                            if nat_stat1_loss > bad_buffer_thresh1:
+                                idx = np.random.randint(0, bad_buffer_size1)
+                                bad_buffer1[idx] = _img1
+                            else:
+                                bad_buffer_tracker1 = bad_buffer_tracker_beta1*bad_buffer_tracker1
+
+                            if bad_buffer_tracker1 < bad_buffer_prob1:
+                                step = nat_stat_mean1-3*nat_stat_std_dev1
+                                bad_buffer_thresh1 = bad_buffer_beta1*bad_buffer_thresh1 + (1.-bad_buffer_beta1)*step
+
+                            if bad_buffer_tracker1 >= bad_buffer_prob1:
+                                step = nat_stat_mean1+3*nat_stat_std_dev1
+                                bad_buffer_thresh1 = bad_buffer_beta1*bad_buffer_thresh1 + (1.-bad_buffer_beta1)*step
+
+                            if nat_stat2_loss > bad_buffer_thresh2:
+                                idx = np.random.randint(0, bad_buffer_size2)
+                                bad_buffer2[idx] = _img2
+                            else:
+                                bad_buffer_tracker2 = bad_buffer_tracker_beta2*bad_buffer_tracker2
+
+                            if bad_buffer_tracker2 < bad_buffer_prob2:
+                                step = nat_stat_mean2-3*nat_stat_std_dev2
+                                bad_buffer_thresh2 = bad_buffer_beta2*bad_buffer_thresh2 + (1.-bad_buffer_beta2)*step
+
+                            if bad_buffer_tracker2 >= bad_buffer_prob2:
+                                step = nat_stat_mean2+3*nat_stat_std_dev2
+                                bad_buffer_thresh2 = bad_buffer_beta2*bad_buffer_thresh2 + (1.-bad_buffer_beta2)*step
 
                             #Update save files
                             try:
