@@ -28,7 +28,7 @@ def images2text(dir, single_file=False):
         cv2.imwrite(filename, gray)
 
         #Extract text
-        text += pytesseract.image_to_string(Image.open(filename), config='--psm 6') + "\n"
+        text += pytesseract.image_to_string(Image.open(filename), config='--psm 1') + "\n"
 
         #Remove temporary file
         os.remove(filename)
@@ -40,5 +40,5 @@ if __name__ == "__main__":
     loc = "H:/ch4o3/"
     text = images2text(loc)
 
-    with open(loc+"text.txt", 'w') as f:
+    with open(loc+"text12.txt", 'w') as f:
         f.write(text)
